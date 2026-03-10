@@ -18,8 +18,33 @@ import type { Logger } from '@agent-os/shared';
 import type { AgentProfile } from './agents/types.js';
 import type { HAMRetriever } from './memory/retriever.js';
 import type { TieredStore } from './memory/tiered-store.js';
+import type { HAMCompressor } from './memory/compressor.js';
 
 const MAX_TOOL_ITERATIONS = 10;
+const L4_MIN_RESPONSE_CHARS = 180; // minimum response length to be worth saving
+
+const STOP_WORDS = new Set([
+  'what', 'who', 'where', 'when', 'why', 'how', 'is', 'are', 'was', 'were',
+  'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'from', 'about', 'can', 'you', 'tell', 'me', 'explain',
+  'describe', 'please', 'could', 'would', 'should', 'does', 'do', 'did',
+]);
+
+function extractTopicSlug(message: string): string {
+  const words = message
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  return words.slice(0, 4).join('-') || 'general-knowledge';
+}
+
+function isWorthSaving(response: string): boolean {
+  if (response.length < L4_MIN_RESPONSE_CHARS) return false;
+  const lower = response.toLowerCase();
+  const conversational = ["i don't know", "i'm not sure", "i cannot", "sorry,", "i apologize", "as an ai"];
+  return !conversational.some((p) => lower.startsWith(p));
+}
 
 export interface EngineInput {
   conversationId: string;
@@ -40,6 +65,7 @@ export class AgentEngine {
     private readonly logger: Logger,
     private readonly hamRetriever?: HAMRetriever,
     private readonly hamStore?: TieredStore,
+    private readonly hamCompressor?: HAMCompressor | null,
   ) {}
 
   getOrCreateConversation(channel: ChannelType, channelId: string): Conversation {
@@ -88,16 +114,50 @@ export class AgentEngine {
 
     const toolDefs = this.tools.getTools();
 
+    // Collect full response text for L4 auto-save check
+    let fullResponse = '';
+    const collectChunks = async function* (
+      gen: AsyncGenerator<StreamChunk>,
+    ): AsyncGenerator<StreamChunk> {
+      for await (const chunk of gen) {
+        if (chunk.type === 'text' && chunk.content) fullResponse += chunk.content;
+        yield chunk;
+      }
+    };
+
     if (provider === 'claude') {
-      yield* this.claudeLoop(input.conversationId, history, systemPrompt, toolDefs, cleanedMessage);
+      yield* collectChunks(this.claudeLoop(input.conversationId, history, systemPrompt, toolDefs, cleanedMessage));
     } else {
-      yield* this.geminiStream(input.conversationId, history, systemPrompt, cleanedMessage);
+      yield* collectChunks(this.geminiStream(input.conversationId, history, systemPrompt, cleanedMessage));
     }
 
     // Update HAM access stats after response
     if (hamResult?.usedChunkIds.length && this.hamStore) {
       for (const id of hamResult.usedChunkIds) {
         this.hamStore.updateAccessStats(id);
+      }
+    }
+
+    // L4 auto-save: if nothing was in memory and response is substantive, learn it
+    if (
+      hamResult?.isMemoryMiss &&
+      this.hamStore &&
+      this.hamCompressor &&
+      isWorthSaving(fullResponse)
+    ) {
+      const topic = extractTopicSlug(cleanedMessage);
+      const existing = this.hamStore.getByTopic(topic);
+      if (!existing) {
+        this.hamCompressor
+          .compressChunk(fullResponse, topic, [])
+          .then((chunk) => {
+            this.hamStore!.addChunk({ ...chunk, lastAccessed: 0, accessCount: 0 });
+            this.logger.info({ topic }, 'L4 auto-saved new knowledge chunk');
+          })
+          .catch((err: unknown) => {
+            this.logger.warn({ err }, 'L4 auto-save failed');
+          });
+        yield { type: 'memory_saved', content: topic };
       }
     }
   }

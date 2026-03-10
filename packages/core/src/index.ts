@@ -94,7 +94,7 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
 
   const engine = new AgentEngine(
     config, memory, skills, tools, claude, gemini, router, logger,
-    hamRetriever, hamStore,
+    hamRetriever, hamStore, hamCompressor,
   );
 
   return { engine, memory, skills, tools, agents, hamStore, hamCompressor };

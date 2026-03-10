@@ -106,6 +106,10 @@ export class Repl {
         } else if (chunk.type === 'usage' && chunk.usage) {
           inputTokens = chunk.usage.inputTokens;
           outputTokens = chunk.usage.outputTokens;
+        } else if (chunk.type === 'memory_saved' && chunk.content) {
+          process.stdout.write(
+            `\n${dim(`  ◆ learned "${chunk.content}" → saved to memory`)}`,
+          );
         } else if (chunk.type === 'tool_call' && chunk.toolCall) {
           process.stdout.write(
             `\n${dim(`  ⚙ ${chunk.toolCall.name}`)}\n`,

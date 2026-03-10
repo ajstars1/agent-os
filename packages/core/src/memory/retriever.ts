@@ -15,6 +15,7 @@ export interface RetrievalResult {
   state: ConversationState;
   expandedTopics: string[];
   usedChunkIds: string[];
+  isMemoryMiss: boolean;  // true when no HAM chunk matched — L4 auto-save candidate
 }
 
 export class HAMRetriever {
@@ -40,6 +41,7 @@ export class HAMRetriever {
       state,
       expandedTopics: activeTopic ? [activeTopic] : [],
       usedChunkIds: ids,
+      isMemoryMiss: activeTopic === null,
     };
   }
 
