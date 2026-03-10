@@ -1,4 +1,7 @@
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor } from '@agent-os/core';
+import type { Message } from '@agent-os/shared';
 
 export interface CommandContext {
   engine: AgentEngine;
@@ -18,6 +21,7 @@ Available commands:
   /memory list               Show all topics with L0 headlines
   /memory stats              Show token usage and access patterns
   /memory add <topic> <content>  Compress and store knowledge
+  /export [filename]         Export conversation to markdown file
   /exit                      Exit the agent
 `;
 
@@ -135,11 +139,81 @@ export const commands: Record<
     process.stdout.write('Usage: /memory [list|stats|add <topic> <content>]\n');
   },
 
+  export: (_args, ctx) => {
+    const messages = ctx.engine.getMessages(ctx.conversationId);
+    if (messages.length === 0) {
+      process.stdout.write('No messages to export.\n');
+      return;
+    }
+
+    const markdown = formatConversationMarkdown(messages);
+    const filename = _args.trim() || generateExportFilename();
+    const filepath = resolve(process.cwd(), filename);
+
+    try {
+      writeFileSync(filepath, markdown, 'utf-8');
+      process.stdout.write(`\x1b[32m✓\x1b[0m Conversation exported to ${filepath}\n`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stdout.write(`\x1b[31mError:\x1b[0m ${msg}\n`);
+    }
+  },
+
   exit: (_args, _ctx) => {
     process.stdout.write('Goodbye.\n');
     process.exit(0);
   },
 };
+
+/**
+ * Generates a timestamped filename for conversation exports.
+ *
+ * @returns A string in the format `agent-os-export-YYYYMMDD-HHmmss.md`.
+ */
+function generateExportFilename(): string {
+  const now = new Date();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `agent-os-export-${date}-${time}.md`;
+}
+
+/**
+ * Converts an array of conversation messages into a formatted markdown string.
+ *
+ * @param messages - Array of Message objects from the conversation history.
+ * @returns A markdown-formatted string containing the full conversation.
+ */
+function formatConversationMarkdown(messages: Message[]): string {
+  const lines: string[] = [];
+  const exportDate = new Date().toISOString();
+
+  lines.push('# AgentOS Conversation Export');
+  lines.push('');
+  lines.push(`**Exported:** ${exportDate}`);
+  lines.push(`**Messages:** ${messages.length}`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  for (const msg of messages) {
+    const timestamp = msg.createdAt
+      ? new Date(msg.createdAt).toLocaleString()
+      : 'unknown';
+    const roleLabel = msg.role === 'user' ? 'User' : 'Assistant';
+    const modelTag = msg.model ? ` *(${msg.model})*` : '';
+
+    lines.push(`### ${roleLabel}${modelTag}`);
+    lines.push(`> ${timestamp}`);
+    lines.push('');
+    lines.push('````markdown');
+    lines.push(msg.content);
+    lines.push('````');
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
 
 export function isCommand(input: string): boolean {
   return input.startsWith('/');

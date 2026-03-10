@@ -76,6 +76,17 @@ export class AgentEngine {
     this.memory.clearConversation(conversationId);
   }
 
+  /**
+   * Retrieves messages for a given conversation.
+   *
+   * @param conversationId - The unique conversation identifier.
+   * @param limit - Maximum number of messages to return (default: 50).
+   * @returns Array of Message objects ordered by creation time.
+   */
+  getMessages(conversationId: string, limit = 50): ReturnType<IMemoryStore['getMessages']> {
+    return this.memory.getMessages(conversationId, limit);
+  }
+
   async *chat(input: EngineInput): AsyncGenerator<StreamChunk> {
     const cleanedMessage = this.router.stripPrefix(input.message);
     const effectiveModel = input.forceModel ?? input.agentProfile?.defaultModel;
