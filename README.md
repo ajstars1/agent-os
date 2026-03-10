@@ -4,21 +4,71 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/ajstars1/agent-os?style=social)](https://github.com/ajstars1/agent-os)
 
-**Open-source AI agent with human-like memory, multi-channel access, and smart LLM routing.**
+**Open-source AI agent that learns from every conversation — 82% fewer tokens than LangChain.**
 
-AgentOS is a personal AI agent that runs everywhere — terminal, Discord, web API — with a novel memory system (HAM) that keeps context lean and responses sharp without burning tokens.
+AgentOS is a self-hosted personal AI agent with a novel memory system (HAM) that compresses knowledge into 4 levels and loads only what each question needs. It runs on CLI, Discord, and a web API — all from the same engine. And it gets smarter over time: when you ask something it doesn't know, it learns the answer automatically.
 
 ---
 
-## Architecture
+## Demo
+
+<p align="center">
+  <img src="assets/demo.gif" alt="AgentOS CLI demo" width="700" />
+</p>
+
+---
+
+## Benchmark — HAM vs Naive Full Context
+
+<p align="center">
+  <img src="assets/benchmark.gif" alt="HAM token benchmark" width="700" />
+</p>
+
+| | Naive (LangChain-style) | AgentOS HAM |
+|---|---|---|
+| Tokens per conversation (8 turns) | ~6,825 | ~1,205 |
+| Cost per 1000 conversations (Claude Sonnet) | $20.47 | $3.61 |
+| State detection latency | ~200ms (LLM call) | **0ms (regex)** |
+| Vector DB required | Often yes | **No** |
+
+Run it yourself: `npm run benchmark`
+
+---
+
+## How It Works
+
+### HAM — Hierarchical Adaptive Memory
+
+Traditional agents dump all context into every prompt — expensive, slow, and unnecessary.
+HAM stores knowledge at 4 compression levels and uses a **zero-cost regex state machine** to decide what depth to load.
+
+```
+Question: "What is this?"      → INTRO state     → L1 (~35 tokens)
+Question: "How does X work?"   → SOLUTION state  → L2 (~150 tokens)
+Question: "Explain internals"  → DEEP_DIVE state → L3 (~500 tokens)
+Unknown topic (no memory hit)  → L4: LLM answers → auto-saved to memory
+```
+
+**L4 Self-Learning:** When you ask something not in memory, AgentOS answers from the LLM's knowledge and automatically compresses + stores the response as a new knowledge chunk. The agent gets smarter with every conversation.
+
+```
+❯ Who is Elon Musk?
+Elon Musk is a billionaire entrepreneur and CEO of Tesla, SpaceX...
+
+  ◆ learned "elon-musk" → saved to memory
+
+  ─ claude · 312↑ 89↓ tokens
+```
+
+### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                        Channels                          │
-│  ┌──────────┐  ┌─────────────┐  ┌────────────────────┐ │
-│  │  CLI     │  │   Discord   │  │   Web (Hono SSE)   │ │
-│  └────┬─────┘  └──────┬──────┘  └─────────┬──────────┘ │
-└───────┼───────────────┼──────────────────┼─────────────┘
+│  ┌──────────┐  ┌─────────────┐  ┌────────────────────┐  │
+│  │  CLI     │  │   Discord   │  │   Web (Hono SSE)   │  │
+│  └────┬─────┘  └──────┬──────┘  └─────────┬──────────┘  │
+└───────┼───────────────┼──────────────────┼──────────────┘
         │               │                  │
         └───────────────▼──────────────────┘
                  ┌───────────────┐
@@ -29,7 +79,7 @@ AgentOS is a personal AI agent that runs everywhere — terminal, Discord, web A
    ┌──────▼──────┐ ┌────▼────┐ ┌──────▼──────┐
    │ LLM Router  │ │  Tools  │ │ HAM Memory  │
    │ cc: → Claude│ │ MCP +   │ │ L0/L1/L2/L3 │
-   │ g:  → Gemini│ │ builtin │ │ StateRouter │
+   │ g:  → Gemini│ │ builtin │ │ + L4 auto   │
    └──────┬──────┘ └────┬────┘ └──────┬──────┘
           │             │              │
    ┌──────▼─────────────▼──────────────▼──────┐
@@ -44,26 +94,25 @@ AgentOS is a personal AI agent that runs everywhere — terminal, Discord, web A
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/ajstars/agent-os.git
+git clone https://github.com/ajstars1/agent-os.git
 cd agent-os
 npm install
 
 # 2. Configure
 cp .env.example .env
-# Edit .env — set ANTHROPIC_API_KEY at minimum
+# Edit .env — add ANTHROPIC_API_KEY (Claude) and/or GOOGLE_API_KEY (Gemini)
 
 # 3. Build
 npm run build
 
-# 4. Run CLI
-node packages/cli/dist/index.js
+# 4. Seed default knowledge (optional but recommended)
+npm run seed-memory
 
-# 5. Run Discord bot
-node packages/discord/dist/index.js
-
-# 6. Run Web API (port 3000)
-node packages/web/dist/index.js
+# 5. Run the CLI
+npm run cli
 ```
+
+That's it. No Docker, no external database, no cloud services required.
 
 ---
 
@@ -71,28 +120,15 @@ node packages/web/dist/index.js
 
 | Feature | Description |
 |---|---|
-| **HAM Memory** | Hierarchical Adaptive Memory — 4-level compression, state-aware retrieval |
-| **Smart routing** | `cc:` prefix → Claude, `g:` prefix → Gemini, `auto` classifies per message |
-| **Multi-channel** | CLI REPL, Discord bot, HTTP + SSE web API |
-| **MCP tools** | JSON-RPC 2.0 tool protocol — connect any MCP server |
-| **Built-in tools** | `web_fetch`, `bash`, `read_file`, `write_file` |
+| **HAM Memory** | 4-level compression (L0–L3) + L4 self-learning from every conversation |
+| **Smart routing** | Claude by default · `cc:` / `g:` prefixes for per-message override |
+| **Auto-routing** | In `auto` mode, Gemini Flash classifies: Claude for reasoning, Gemini for large-context |
+| **Multi-channel** | CLI REPL, Discord bot, HTTP + SSE web API, Next.js dashboard |
+| **MCP tools** | JSON-RPC 2.0 — connect any MCP server with zero custom code |
+| **Built-in tools** | `web_fetch`, `bash` (sandboxed), `read_file`, `write_file` (path-jailed) |
 | **Named agents** | Load agent profiles from `~/.agent-os/agents/*.json` |
-| **Skills** | Hot-reload `.md` skill files, auto-ingest into HAM |
-
----
-
-## HAM Memory
-
-Traditional agents stuff all context into every prompt — expensive and slow.
-HAM loads only what's needed, at the depth needed.
-
-```
-User asks "what is this?" → INTRO state → L1 depth (~35 tokens per topic)
-User asks "tell me more"  → DEEP_DIVE  → L3 depth (~500 tokens, active topic only)
-User asks "how much?"     → CTA state  → L1 depth (brief, action-focused)
-```
-
-→ See [docs/ham-algorithm.md](docs/ham-algorithm.md) for full explanation.
+| **Skills** | Hot-reload `.md` skill files, auto-ingest into HAM on startup |
+| **SQLite only** | WAL mode, no external DB — runs on a $5/mo VPS |
 
 ---
 
@@ -101,40 +137,39 @@ User asks "how much?"     → CTA state  → L1 depth (brief, action-focused)
 ```
 /help                        Show all commands
 /clear                       Clear conversation history
-/model <claude|gemini|auto>  Switch LLM
-/skills                      List loaded skills
-/memory list                 Show knowledge base topics
+/model <claude|gemini|auto>  Switch LLM for this session
+/skills                      List loaded skill files
+/memory list                 Show all knowledge topics with L0 headlines
 /memory stats                Token usage and access patterns
-/memory add <topic> <text>   Add and compress knowledge
+/memory add <topic> <text>   Manually compress and store knowledge
 /exit                        Quit
+```
+
+**Per-message model override:**
+```
+cc: explain this algorithm    → always uses Claude (strips prefix)
+g: summarise this document    → always uses Gemini (strips prefix)
 ```
 
 ---
 
-## Environment Variables
+## Running Each Channel
 
 ```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...
+# Interactive CLI
+npm run cli
 
-# Gemini (enables auto-routing + HAM compression)
-GOOGLE_API_KEY=AIza...
+# Discord bot
+node packages/discord/dist/index.js
 
-# Discord adapter
-DISCORD_TOKEN=
-DISCORD_CLIENT_ID=
-DISCORD_GUILD_ID=
+# Web API + SSE (port 3000)
+node packages/web/dist/index.js
 
-# Storage
-DB_PATH=~/.agent-os/memory.db
+# Web dashboard (port 3002, requires web API running)
+npm run dev:ui
 
-# Skills
-SKILLS_DIR=~/.claude/skills
-CLAUDE_MD_PATH=./CLAUDE.md
-
-# Web server
-WEB_PORT=3000
-WEB_CORS_ORIGIN=*
+# Token benchmark
+npm run benchmark
 ```
 
 ---
@@ -150,10 +185,13 @@ curl -X POST http://localhost:3000/chat \
 # SSE streaming
 curl -X POST http://localhost:3000/chat/stream \
   -H 'Content-Type: application/json' \
-  -d '{"message": "explain HAM", "model": "claude"}'
+  -d '{"message": "explain HAM memory"}'
 
-# Clear conversation
-curl -X DELETE http://localhost:3000/conversations/<id>
+# List conversations
+curl http://localhost:3000/conversations
+
+# Memory chunks
+curl http://localhost:3000/memory/chunks
 
 # Health
 curl http://localhost:3000/health
@@ -161,15 +199,57 @@ curl http://localhost:3000/health
 
 ---
 
+## Environment Variables
+
+```bash
+# Required (at least one)
+ANTHROPIC_API_KEY=sk-ant-...    # Claude — default model for reasoning
+GOOGLE_API_KEY=AIza...          # Gemini — enables auto-routing + HAM compression + L4
+
+# LLM routing: claude (default) | gemini | auto
+DEFAULT_MODEL=claude
+
+# Storage
+DB_PATH=~/.agent-os/memory.db
+
+# Skills (loaded as system context, hot-reloaded)
+SKILLS_DIR=~/.claude/skills
+
+# Discord adapter
+DISCORD_TOKEN=
+DISCORD_CLIENT_ID=
+DISCORD_GUILD_ID=
+DISCORD_ALLOWED_CHANNELS=
+
+# Web server
+WEB_PORT=3000
+WEB_CORS_ORIGIN=*
+
+# File tool access (empty = unrestricted)
+ALLOWED_DIRS=
+```
+
+---
+
+## HAM Deep Dive
+
+→ See [docs/ham-algorithm.md](docs/ham-algorithm.md) for the full algorithm specification, SQLite schema, token budget examples, and the state machine transition table.
+
+---
+
 ## Contributing
 
 1. Fork the repo
 2. Create a branch: `git checkout -b feat/my-feature`
-3. Commit: `git commit -m "feat: my feature"`
+3. Commit with conventional format: `git commit -m "feat: my feature"`
 4. Push and open a PR — include **What** and **Why** in the description
 
 Code rules: TypeScript strict, no `any`, named exports, Zod on all inputs, pino for logging.
-Run tests: `npm test`
+
+```bash
+npm test          # run all tests
+npm run type-check  # type check all packages
+```
 
 ---
 
