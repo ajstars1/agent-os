@@ -58,8 +58,11 @@ export class GeminiClient {
   async classify(message: string): Promise<'claude' | 'gemini'> {
     const model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     const prompt = `You are a routing classifier. Reply with exactly one word: "claude" or "gemini".
-Route to "claude" for: code generation, architecture, writing, analysis, complex reasoning, debugging, system design.
-Route to "gemini" for: quick lookups, search, simple Q&A, scheduling, conversions, calculations, brief summaries.
+
+Default to "claude". Only route to "gemini" when the task is clearly large-context or token-heavy:
+Route to "gemini" for: summarising very long documents, processing large files, bulk data extraction, tasks where input or output exceeds ~4000 tokens, translation of long texts.
+Route to "claude" for: everything else — reasoning, coding, debugging, writing, analysis, short Q&A, planning, system design, math, logic.
+
 Message: ${message}`;
 
     const result = await model.generateContent(prompt);
