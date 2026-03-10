@@ -1,0 +1,1 @@
+{"version":3,"file":"cors.d.ts","sourceRoot":"","sources":["../../src/middleware/cors.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,iBAAiB,EAAE,MAAM,MAAM,CAAC;AAE9C,wBAAgB,UAAU,CAAC,MAAM,EAAE,MAAM,GAAG,iBAAiB,CAS5D"}
