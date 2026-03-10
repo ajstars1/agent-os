@@ -2,7 +2,7 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/ajstars/agent-os?style=social)](https://github.com/ajstars1/agent-os)
+[![Stars](https://img.shields.io/github/stars/ajstars1/agent-os?style=social)](https://github.com/ajstars1/agent-os)
 
 **Open-source AI agent with human-like memory, multi-channel access, and smart LLM routing.**
 
