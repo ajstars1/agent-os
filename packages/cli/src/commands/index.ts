@@ -173,16 +173,9 @@ export const commands: Record<
 function generateExportFilename(): string {
   const now = new Date();
   const pad = (n: number): string => String(n).padStart(2, '0');
-  const timestamp = [
-    now.getFullYear(),
-    pad(now.getMonth() + 1),
-    pad(now.getDate()),
-    '-',
-    pad(now.getHours()),
-    pad(now.getMinutes()),
-    pad(now.getSeconds()),
-  ].join('');
-  return `agent-os-export-${timestamp}.md`;
+  const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `agent-os-export-${date}-${time}.md`;
 }
 
 /**
@@ -213,9 +206,9 @@ function formatConversationMarkdown(messages: Message[]): string {
     lines.push(`### ${roleLabel}${modelTag}`);
     lines.push(`> ${timestamp}`);
     lines.push('');
+    lines.push('````markdown');
     lines.push(msg.content);
-    lines.push('');
-    lines.push('---');
+    lines.push('````');
     lines.push('');
   }
 
