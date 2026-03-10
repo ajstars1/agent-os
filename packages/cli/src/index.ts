@@ -24,8 +24,8 @@ function parseArgs(argv: string[]): { agent?: string; model?: string } {
 async function main(): Promise<void> {
   const _args = parseArgs(process.argv);
 
-  // Suppress info logs in CLI — they pollute the REPL output
-  if (!process.env['LOG_LEVEL']) process.env['LOG_LEVEL'] = 'warn';
+  // Force warn level — info logs from bootstrap pollute the REPL output
+  process.env['LOG_LEVEL'] = 'warn';
 
   let config;
   try {
