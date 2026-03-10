@@ -92,6 +92,15 @@ export class SQLiteMemoryStore implements IMemoryStore {
     return { id, channel, channelId, createdAt: now, updatedAt: now };
   }
 
+  ensureConversation(id: string, channel: ChannelType = 'web'): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        'INSERT OR IGNORE INTO conversations (id, channel, channel_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(id, channel, id, now, now);
+  }
+
   addMessage(conversationId: string, msg: Omit<Message, 'id' | 'createdAt'>): Message {
     const now = new Date().toISOString();
     const id = randomUUID();

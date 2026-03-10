@@ -55,6 +55,9 @@ export class AgentEngine {
     const effectiveModel = input.forceModel ?? input.agentProfile?.defaultModel;
     const provider = await this.router.route(input.message, effectiveModel);
 
+    // Ensure conversation row exists before inserting messages (web route passes a bare UUID)
+    this.memory.ensureConversation(input.conversationId);
+
     // Store user message first so history is current for HAM retrieval
     this.memory.addMessage(input.conversationId, {
       conversationId: input.conversationId,
