@@ -11,7 +11,8 @@
     "dev:ui": "turbo run dev --filter=@agent-os/ui",
     "type-check": "turbo run type-check",
     "test": "turbo run test",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "benchmark": "npx tsx scripts/benchmark.ts"
   },
   "devDependencies": {
     "turbo": "^2.3.3",
