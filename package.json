@@ -8,6 +8,7 @@
     "dev:cli": "turbo run dev --filter=@agent-os/cli",
     "dev:discord": "turbo run dev --filter=@agent-os/discord",
     "dev:web": "turbo run dev --filter=@agent-os/web",
+    "dev:ui": "turbo run dev --filter=@agent-os/ui",
     "type-check": "turbo run type-check",
     "test": "turbo run test",
     "clean": "turbo run clean"

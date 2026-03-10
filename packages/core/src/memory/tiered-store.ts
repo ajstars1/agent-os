@@ -191,6 +191,15 @@ export class TieredStore {
       .run(contentHash, l0, l1, l2, new Date().toISOString());
   }
 
+  listChunks(): KnowledgeChunk[] {
+    const rows = this.db
+      .prepare<[], ChunkRow>(
+        'SELECT * FROM knowledge_chunks ORDER BY last_accessed DESC',
+      )
+      .all();
+    return rows.map((r) => this.rowToChunk(r));
+  }
+
   getAllChunkStats(): Array<{ topic: string; l0: string; accessCount: number; lastAccessed: number }> {
     const rows = this.db
       .prepare<[], Pick<ChunkRow, 'topic' | 'l0' | 'access_count' | 'last_accessed'>>(

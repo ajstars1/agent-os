@@ -6,8 +6,11 @@ node_modules/
 # Build outputs
 dist/
 build/
+.next/
 *.js.map
 *.d.ts.map
+*.tsbuildinfo
+next-env.d.ts
 
 # Turbo
 .turbo/

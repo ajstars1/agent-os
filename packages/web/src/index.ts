@@ -25,7 +25,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const { engine, agents, memory, tools, skills } = bootstrapped;
+  const { engine, agents, memory, tools, skills, hamStore } = bootstrapped;
 
   const app = createServer({
     engine,
@@ -34,6 +34,7 @@ async function main(): Promise<void> {
     tools,
     config,
     logger,
+    hamStore,
   });
 
   const server = serve({ fetch: app.fetch, port: config.WEB_PORT }, (info) => {

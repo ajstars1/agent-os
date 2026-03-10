@@ -128,6 +128,40 @@ export class SQLiteMemoryStore implements IMemoryStore {
     }));
   }
 
+  listConversations(limit = 50): Conversation[] {
+    const rows = this.db
+      .prepare<[number], ConversationRow>(
+        'SELECT * FROM conversations ORDER BY updated_at DESC LIMIT ?',
+      )
+      .all(limit);
+
+    return rows.map((r) => ({
+      id: r.id,
+      channel: r.channel as ChannelType,
+      channelId: r.channel_id,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  getConversationMessages(conversationId: string, limit = 100): Message[] {
+    const rows = this.db
+      .prepare<[string, number], MessageRow>(
+        'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?',
+      )
+      .all(conversationId, limit);
+
+    return rows.map((r) => ({
+      id: r.id,
+      conversationId: r.conversation_id,
+      role: r.role as Message['role'],
+      content: r.content,
+      model: r.model ?? undefined,
+      tokens: r.tokens ?? undefined,
+      createdAt: r.created_at,
+    }));
+  }
+
   clearConversation(conversationId: string): void {
     this.db
       .prepare('DELETE FROM messages WHERE conversation_id = ?')
