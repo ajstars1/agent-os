@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
-import { resolve } from 'node:path';
-dotenv.config({ path: resolve(process.cwd(), '../../.env') });
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../../../.env') });
 import { serve } from '@hono/node-server';
 import { loadConfig, createLogger } from '@agent-os/shared';
 import { bootstrap } from '@agent-os/core';
