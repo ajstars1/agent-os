@@ -206,9 +206,7 @@ function formatConversationMarkdown(messages: Message[]): string {
     lines.push(`### ${roleLabel}${modelTag}`);
     lines.push(`> ${timestamp}`);
     lines.push('');
-    lines.push('````markdown');
     lines.push(msg.content);
-    lines.push('````');
     lines.push('');
   }
 
