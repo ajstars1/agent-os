@@ -38,6 +38,16 @@ class InferenceRequest(BaseModel):
     inputs: list[list[float]]
     """2-D list of floats (batch × features)."""
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "inputs": [[0.0 for _ in range(128)]]
+                }
+            ]
+        }
+    }
+
 
 class InferenceResponse(BaseModel):
     outputs: list[list[float]]
@@ -78,6 +88,8 @@ async def infer(request: InferenceRequest) -> InferenceResponse:
         tensor_in = torch.tensor(request.inputs, dtype=torch.float32)
         tensor_out = _engine.forward(tensor_in)
         outputs = tensor_out.tolist()
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
