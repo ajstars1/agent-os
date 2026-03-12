@@ -20,6 +20,14 @@
     },
     "clean": {
       "cache": false
+    },
+    "python:build": {
+      "cache": false,
+      "outputs": ["dist/**"]
+    },
+    "python:test": {
+      "dependsOn": ["python:build"],
+      "cache": false
     }
   }
 }

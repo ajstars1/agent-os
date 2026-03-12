@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "agent-os-engine"
+version = "0.1.0"
+description = "Custom PyTorch-based neural engine for AgentOS"
+authors = ["AgentOS Team"]
+readme = "README.md"
+packages = [{ include = "engine", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+torch = ">=2.2.0"
+numpy = ">=1.26.0"
+fastapi = ">=0.110.0"
+uvicorn = { version = ">=0.29.0", extras = ["standard"] }
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0.0"
+pytest-asyncio = ">=0.23.0"
+httpx = ">=0.27.0"
+ruff = ">=0.4.0"
+mypy = ">=1.9.0"
+
+[tool.poetry.scripts]
+engine = "engine.main:app"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
