@@ -75,4 +75,5 @@ export interface Config {
   WEB_CORS_ORIGIN: string;
   AGENTS_DIR: string;
   ALLOWED_DIRS?: string;
+  NEURAL_ENGINE_URL: string;
 }

@@ -38,6 +38,7 @@ import { AgentEngine } from './engine.js';
 import { AgentLoader } from './agents/loader.js';
 import { registerBuiltinTools } from './tools/builtin.js';
 import { createLogger } from '@agent-os/shared';
+import { NeuralClient } from './memory/neural-client.js';
 
 export interface BootstrapResult {
   engine: AgentEngine;
@@ -80,7 +81,8 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
 
   // ── HAM memory layer ──────────────────────────────────────────────────────
   const hamStore = new TieredStore(config.DB_PATH);
-  const hamRetriever = new HAMRetriever(hamStore);
+  const neuralClient = new NeuralClient(config.NEURAL_ENGINE_URL);
+  const hamRetriever = new HAMRetriever(hamStore, neuralClient);
   const hamCompressor = config.GOOGLE_API_KEY
     ? new HAMCompressor(config.GOOGLE_API_KEY, hamStore)
     : null;

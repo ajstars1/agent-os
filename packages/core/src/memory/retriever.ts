@@ -57,33 +57,37 @@ export class HAMRetriever {
     let droppedHallucinationRisks = 0;
 
     if (this.neuralClient && candidateTexts.length > 0) {
-      const neuralResponse = await this.neuralClient.evaluateContext(
-        userMessage,
-        candidateTexts,
-        currentAstrocyteLevel,
-      );
-
-      neuralAstrocyteLevel = neuralResponse.astrocyteLevel;
-
-      // Filter: drop any candidate whose Epanechnikov weight is exactly 0.0
-      const survived: string[] = [];
-      for (let i = 0; i < candidateTexts.length; i++) {
-        const weight = neuralResponse.attentionWeights[i] ?? 0;
-        if (weight === 0) {
-          droppedHallucinationRisks++;
-        } else {
-          survived.push(candidateTexts[i]);
-        }
-      }
-
-      if (droppedHallucinationRisks > 0) {
-        console.log(
-          `[HAMRetriever] Epanechnikov filter dropped ${droppedHallucinationRisks} hallucination risk(s) ` +
-          `(${survived.length} of ${candidateTexts.length} candidates retained).`,
+      try {
+        const neuralResponse = await this.neuralClient.evaluateContext(
+          userMessage,
+          candidateTexts,
+          currentAstrocyteLevel,
         );
-      }
 
-      finalMemory = survived.join('\n\n');
+        neuralAstrocyteLevel = neuralResponse.astrocyteLevel;
+
+        // Filter: drop any candidate whose Epanechnikov weight is exactly 0.0
+        const survived: string[] = [];
+        for (let i = 0; i < candidateTexts.length; i++) {
+          const weight = neuralResponse.attentionWeights[i] ?? 0;
+          if (weight === 0) {
+            droppedHallucinationRisks++;
+          } else {
+            survived.push(candidateTexts[i]);
+          }
+        }
+
+        if (droppedHallucinationRisks > 0) {
+          console.log(
+            `[HAMRetriever] Epanechnikov filter dropped ${droppedHallucinationRisks} hallucination risk(s) ` +
+            `(${survived.length} of ${candidateTexts.length} candidates retained).`,
+          );
+        }
+
+        finalMemory = survived.join('\n\n');
+      } catch (err) {
+        process.stderr.write('Neural Engine unreachable, falling back to standard retrieval\n');
+      }
     }
     // ─────────────────────────────────────────────────────────────────────────
 

@@ -30,11 +30,7 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1_000;
 /** Number of recent messages gathered for the sleep consolidation pass. */
 const SLEEP_MESSAGE_LIMIT = 50;
 
-/** Base URL of the Python neural engine. Overridable via env. */
-const NEURAL_ENGINE_URL =
-  (typeof process !== 'undefined' && process.env.NEURAL_ENGINE_URL) ||
-  'http://localhost:8000';
-
+// Removed global NEURAL_ENGINE_URL; using config.NEURAL_ENGINE_URL instead.
 const STOP_WORDS = new Set([
   'what', 'who', 'where', 'when', 'why', 'how', 'is', 'are', 'was', 'were',
   'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -219,7 +215,7 @@ export class AgentEngine {
       };
 
       try {
-        const res = await fetch(`${NEURAL_ENGINE_URL}/trigger_sleep`, {
+        const res = await fetch(`${this.config.NEURAL_ENGINE_URL}/trigger_sleep`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ logs, prune_threshold: 0.9 }),
@@ -316,10 +312,11 @@ export class AgentEngine {
 
     // HAM retrieval — prepend adaptive memory to system prompt
     const hamResult = await this.hamRetriever?.retrieve(cleanedMessage, history, input.conversationId);
+    const CORE_SYSTEM_PROMPT = `You are the cognitive generator for AgentOS. You are not a standard AI assistant; you are the language module of a larger neurosymbolic brain. You will be provided with "Verified Context" retrieved from your Knowledge Graph and Episodic Memory. When the user uses first-person pronouns (I, me, my), they are referring to themselves. Use the provided Verified Context as absolute truth to answer the user's queries.`;
     const baseContext = this.skills.getSystemContext();
     let systemPrompt = input.agentProfile?.systemPrompt
-      ? `${input.agentProfile.systemPrompt}\n\n---\n\n${baseContext}`
-      : baseContext;
+      ? `${CORE_SYSTEM_PROMPT}\n\n${input.agentProfile.systemPrompt}\n\n---\n\n${baseContext}`
+      : `${CORE_SYSTEM_PROMPT}\n\n---\n\n${baseContext}`;
 
     if (hamResult?.activeMemory) {
       systemPrompt = `${hamResult.activeMemory}\n\n---\n\n${systemPrompt}`;

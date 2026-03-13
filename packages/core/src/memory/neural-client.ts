@@ -157,23 +157,16 @@ export class NeuralClient {
 
       if (!res.ok) {
         const errorText = await res.text().catch(() => '(unreadable body)');
-        console.error(
-          `[NeuralClient] POST /process_memory failed: ${res.status} ${res.statusText}\n${errorText}`,
-        );
-        return this._defaultWithWeights(candidateMemories.length);
+        throw new Error(`[NeuralClient] POST /process_memory failed: ${res.status} ${res.statusText}\n${errorText}`);
       }
 
       const raw = (await res.json()) as RawEvaluateResponse;
       return this._toResponse(raw, candidateMemories.length);
     } catch (err) {
       if (this._isTimeout(err)) {
-        console.warn(
-          `[NeuralClient] Request timed out after ${this.timeoutMs} ms — falling back to default state.`,
-        );
-      } else {
-        console.error('[NeuralClient] Network error in evaluateContext:', err);
+        throw new Error(`[NeuralClient] Request timed out after ${this.timeoutMs} ms`);
       }
-      return this._defaultWithWeights(candidateMemories.length);
+      throw err;
     }
   }
 

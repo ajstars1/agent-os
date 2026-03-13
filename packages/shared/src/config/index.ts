@@ -19,6 +19,7 @@ const configSchema = z.object({
   WEB_CORS_ORIGIN: z.string().default('*'),
   AGENTS_DIR: z.string().default('~/.agent-os/agents'),
   ALLOWED_DIRS: z.string().optional(),
+  NEURAL_ENGINE_URL: z.string().default('http://localhost:8000'),
 });
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
