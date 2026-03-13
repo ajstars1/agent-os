@@ -171,6 +171,15 @@ export class SQLiteMemoryStore implements IMemoryStore {
     }));
   }
 
+  deleteMessagesByIds(ids: string[]): void {
+    if (ids.length === 0) return;
+    // Use a single DELETE … WHERE id IN (…) with one bound parameter per id.
+    const placeholders = ids.map(() => '?').join(', ');
+    this.db
+      .prepare(`DELETE FROM messages WHERE id IN (${placeholders})`)
+      .run(...ids);
+  }
+
   clearConversation(conversationId: string): void {
     this.db
       .prepare('DELETE FROM messages WHERE conversation_id = ?')

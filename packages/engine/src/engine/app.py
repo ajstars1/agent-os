@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from engine import __version__
 from engine.ase_layer import AstroSymbolicEpisodicLayer
+from engine.consolidation import MemoryConsolidator
 from engine.model import NeuralEngine
 
 app = FastAPI(
@@ -44,6 +45,9 @@ _ASE_LAYER = AstroSymbolicEpisodicLayer(d_model=_D_MODEL, num_logical_roles=8)
 # In-process session store: maps session_id → astrocyte_state Tensor (shape: (1,))
 # Values are detached CPU tensors so they can be cheaply serialised to lists.
 _SESSION_STATES: dict[str, torch.Tensor] = {}
+
+# Singleton MemoryConsolidator (shares the same embedding weights)
+_CONSOLIDATOR = MemoryConsolidator(embedding=_EMBEDDING, prune_threshold=0.9)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +103,53 @@ class MemoryResponse(BaseModel):
 
     astrocyte_state: list[float]
     """Updated per-sample astrocyte state after processing this request."""
+
+
+class SleepRequest(BaseModel):
+    """Payload for the /trigger_sleep endpoint."""
+
+    logs: list[str]
+    """Ordered list of raw episodic log strings from the current day/session."""
+
+    prune_threshold: float = 0.9
+    """Epanechnikov similarity threshold above which a log is considered
+    redundant and flagged for deletion.  Must be in [0, 1]."""
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "logs": [
+                        "User asked about the weather in Paris.",
+                        "User asked about the temperature in Paris.",
+                        "User requested a poem about autumn.",
+                    ],
+                    "prune_threshold": 0.9,
+                }
+            ]
+        }
+    }
+
+
+class SleepResponse(BaseModel):
+    """Response from the /trigger_sleep endpoint."""
+
+    indices_to_delete: list[int]
+    """Indices (into the original *logs* list) of near-duplicate entries that
+    should be pruned from the episodic store."""
+
+    consolidated_context: str
+    """Newline-joined surviving log entries, forming the distilled memory
+    context ready for long-term storage or prompt injection."""
+
+    logs_total: int
+    """Total number of logs received."""
+
+    logs_pruned: int
+    """Number of logs flagged for deletion."""
+
+    logs_retained: int
+    """Number of logs that survived the pruning pass."""
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +259,61 @@ async def process_memory(request: MemoryRequest) -> MemoryResponse:
         astrocyte_state=new_astro_state.tolist(),
     )
 
+
+@app.post("/trigger_sleep", response_model=SleepResponse, tags=["memory"])
+async def trigger_sleep(request: SleepRequest) -> SleepResponse:
+    """Run the sleep-cycle memory consolidation pass.
+
+    Accepts a list of recent episodic conversation/log strings, computes
+    pairwise Epanechnikov similarity between every pair of mean-pooled
+    embeddings, and flags near-duplicate entries (similarity > threshold)
+    for deletion.  The surviving logs are joined into a ``consolidated_context``
+    string.
+
+    This is analogous to hippocampal replay during slow-wave sleep:
+    the brain identifies redundant traces and consolidates / discards them,
+    leaving a compact yet faithful episodic summary.
+
+    **Request body**
+    - ``logs``            – list of raw episodic text strings.
+    - ``prune_threshold`` – similarity cutoff (default 0.9).
+
+    **Response**
+    - ``indices_to_delete``     – indices in *logs* flagged as redundant.
+    - ``consolidated_context``  – distilled, deduplicated memory string.
+    - ``logs_total`` / ``logs_pruned`` / ``logs_retained`` – accounting stats.
+    """
+    if not request.logs:
+        raise HTTPException(
+            status_code=422, detail="`logs` must be a non-empty list"
+        )
+
+    if not (0.0 <= request.prune_threshold <= 1.0):
+        raise HTTPException(
+            status_code=422,
+            detail="`prune_threshold` must be in [0, 1]",
+        )
+
+    try:
+        # Re-configure the consolidator's threshold if the caller overrides it.
+        # We swap the threshold on the singleton rather than constructing a new
+        # object so the embedding weights stay shared.
+        _CONSOLIDATOR.prune_threshold = request.prune_threshold
+
+        result = _CONSOLIDATOR.consolidate(request.logs)
+
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    total = len(request.logs)
+    pruned = len(result.indices_to_delete)
+
+    return SleepResponse(
+        indices_to_delete=result.indices_to_delete,
+        consolidated_context=result.consolidated_context,
+        logs_total=total,
+        logs_pruned=pruned,
+        logs_retained=total - pruned,
+    )
