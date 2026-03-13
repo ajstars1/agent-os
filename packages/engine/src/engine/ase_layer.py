@@ -249,35 +249,39 @@ class AstroSymbolicEpisodicLayer(nn.Module):
         # ------------------------------------------------------------------
         # Step 4: Scale τ using astrocyte state
         #   τ_eff = tau_base * (1 + astro_scale * astrocyte_state)
-        #   Broadcast to (B, 1, 1) so epanechnikov_attention is called once
-        #   per sample with its own effective bandwidth.
+        #   Shape (B, 1, 1) — broadcast over (T_q, T_k) in the kernel below.
         # ------------------------------------------------------------------
-        # (B,) → (B, 1, 1) for broadcasting over (T_q, T_k)
         tau_eff = self.tau_base * (
             1.0 + self.astro_scale * new_astrocyte_state
         ).clamp(min=1e-3).unsqueeze(-1).unsqueeze(-1)  # (B, 1, 1)
 
-        # epanechnikov_attention supports (..., T_q, D) × (..., T_k, D).
-        # We process each sample independently via a vectorised loop using
-        # vmap-style broadcasting: add a dummy "head" dim so shapes are
-        # (B, 1, T_q, D) and (B, 1, T_k, D); tau_eff is (B, 1, 1).
-        Q_4d = Q.unsqueeze(1)       # (B, 1, T_q, D)
-        K_4d = K_bound.unsqueeze(1) # (B, 1, T_k, D)
+        # ------------------------------------------------------------------
+        # Vectorised Epanechnikov kernel with tensor τ
+        #
+        # We inline the kernel (rather than calling the primitive helper which
+        # accepts only a Python scalar τ) so that tau_eff stays inside the
+        # autograd graph — this is the only way gradients can flow back through
+        # astro_scale.
+        #
+        # Steps mirror epanechnikov_attention() exactly:
+        #   1. Normalised cosine similarity  → cos_sim ∈ [-1, 1]  (B, T_q, T_k)
+        #   2. Rescale to [0, 1]:  x = (cos_sim + 1) / 2
+        #   3. Epanechnikov kernel: S = max(0, 1 − τ_eff · (1 − x)²)
+        #   4. Normalise across key dim
+        # ------------------------------------------------------------------
+        q_norm = F.normalize(Q,       p=2, dim=-1)  # (B, T_q, D)
+        k_norm = F.normalize(K_bound, p=2, dim=-1)  # (B, T_k, D)
 
-        # epanechnikov_attention takes a scalar tau; compute per-sample by
-        # looping over the batch (needed because τ differs per sample).
-        attn_weights_list = []
-        for b in range(B):
-            tau_b = tau_eff[b, 0, 0].item()  # scalar float
-            w_b = epanechnikov_attention(
-                Q_4d[b],   # (1, T_q, D)
-                K_4d[b],   # (1, T_k, D)
-                tau=tau_b,
-            )  # (1, T_q, T_k)
-            attn_weights_list.append(w_b)
+        # (B, T_q, D) × (B, D, T_k) → (B, T_q, T_k)
+        cos_sim = torch.bmm(q_norm, k_norm.transpose(-2, -1))
+        x = (cos_sim + 1.0) / 2.0                          # ∈ [0, 1]
 
-        attn_weights = torch.stack(attn_weights_list, dim=0)  # (B, 1, T_q, T_k)
-        attn_weights = attn_weights.squeeze(1)                 # (B, T_q, T_k)
+        # tau_eff: (B, 1, 1) — broadcasts over (T_q, T_k) per sample.
+        scores = torch.clamp(1.0 - tau_eff * (1.0 - x) ** 2, min=0.0)
+
+        # Normalise (same as epanechnikov_attention step 4).
+        scores_sum = scores.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+        attn_weights = scores / scores_sum                  # (B, T_q, T_k)
 
         # ------------------------------------------------------------------
         # Step 5: Weighted sum of Value vectors
