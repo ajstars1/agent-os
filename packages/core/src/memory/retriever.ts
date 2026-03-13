@@ -1,6 +1,7 @@
 import type { Message } from '@agent-os/shared';
 import { StateRouter, type ConversationState, type RetrievalDepth } from './state-router.js';
 import type { TieredStore, L0Entry } from './tiered-store.js';
+import { NeuralClient } from './neural-client.js';
 
 const MAX_ACTIVE_MEMORY_TOKENS = 400;
 const CHARS_PER_TOKEN = 4;
@@ -16,32 +17,85 @@ export interface RetrievalResult {
   expandedTopics: string[];
   usedChunkIds: string[];
   isMemoryMiss: boolean;  // true when no HAM chunk matched — L4 auto-save candidate
+  /** Updated astrocyte modulation level after Epanechnikov evaluation. undefined when NeuralClient is not configured. */
+  neuralAstrocyteLevel?: number;
+  /** Number of candidates dropped because their Epanechnikov attention weight was exactly 0. */
+  droppedHallucinationRisks: number;
 }
 
 export class HAMRetriever {
   private readonly routers = new Map<string, StateRouter>();
+  private readonly neuralClient?: NeuralClient;
 
-  constructor(private readonly store: TieredStore) {}
+  /**
+   * @param store        - The tiered memory store.
+   * @param neuralClient - Optional NeuralClient for Epanechnikov re-ranking.
+   *                       When omitted, retrieval falls back to pure keyword ranking.
+   */
+  constructor(store: TieredStore, neuralClient?: NeuralClient);
+  constructor(private readonly store: TieredStore, neuralClient?: NeuralClient) {
+    this.neuralClient = neuralClient;
+  }
 
-  retrieve(
+  async retrieve(
     userMessage: string,
     _history: Message[],
     conversationId: string,
-  ): RetrievalResult {
+    /** Current astrocyte modulation level, forwarded to the neural engine. Defaults to 0. */
+    currentAstrocyteLevel = 0,
+  ): Promise<RetrievalResult> {
     const router = this.getRouter(conversationId);
     const state = router.transition(userMessage);
     const depth = router.getRetrievalDepth(state);
 
     const activeTopic = this.detectTopic(userMessage);
-    const { text, ids } = this.assembleMemory(activeTopic, depth);
+    const { text, ids, candidateTexts } = this.assembleMemory(activeTopic, depth);
+
+    // ── Epanechnikov neural re-ranking ────────────────────────────────────────
+    let finalMemory = text;
+    let neuralAstrocyteLevel: number | undefined;
+    let droppedHallucinationRisks = 0;
+
+    if (this.neuralClient && candidateTexts.length > 0) {
+      const neuralResponse = await this.neuralClient.evaluateContext(
+        userMessage,
+        candidateTexts,
+        currentAstrocyteLevel,
+      );
+
+      neuralAstrocyteLevel = neuralResponse.astrocyteLevel;
+
+      // Filter: drop any candidate whose Epanechnikov weight is exactly 0.0
+      const survived: string[] = [];
+      for (let i = 0; i < candidateTexts.length; i++) {
+        const weight = neuralResponse.attentionWeights[i] ?? 0;
+        if (weight === 0) {
+          droppedHallucinationRisks++;
+        } else {
+          survived.push(candidateTexts[i]);
+        }
+      }
+
+      if (droppedHallucinationRisks > 0) {
+        console.log(
+          `[HAMRetriever] Epanechnikov filter dropped ${droppedHallucinationRisks} hallucination risk(s) ` +
+          `(${survived.length} of ${candidateTexts.length} candidates retained).`,
+        );
+      }
+
+      finalMemory = survived.join('\n\n');
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     return {
-      activeMemory: text,
-      tokenCount: estimateTokens(text),
+      activeMemory: finalMemory,
+      tokenCount: estimateTokens(finalMemory),
       state,
       expandedTopics: activeTopic ? [activeTopic] : [],
       usedChunkIds: ids,
       isMemoryMiss: activeTopic === null,
+      neuralAstrocyteLevel,
+      droppedHallucinationRisks,
     };
   }
 
@@ -97,22 +151,28 @@ export class HAMRetriever {
   private assembleMemory(
     activeTopic: string | null,
     depth: RetrievalDepth,
-  ): { text: string; ids: string[] } {
+  ): { text: string; ids: string[]; candidateTexts: string[] } {
     const usedIds: string[] = [];
     const parts: string[] = [];
+    // candidateTexts: the discrete memory sections passed to the neural ranker
+    const candidateTexts: string[] = [];
 
     // 1. All L0 headlines
     const all: L0Entry[] = this.store.getAllL0();
     if (all.length > 0) {
       const headlines = all.map((e) => `• ${e.topic}: ${e.l0}`).join('\n');
-      parts.push(`### Knowledge Index\n${headlines}`);
+      const headlinesSection = `### Knowledge Index\n${headlines}`;
+      parts.push(headlinesSection);
+      candidateTexts.push(headlinesSection);
     }
 
     // 2. Expand active topic at requested depth
     if (activeTopic) {
       const expanded = this.store.getAtDepth(activeTopic, depth);
       if (expanded) {
-        parts.push(`### Active Topic: ${activeTopic} (${depth})\n${expanded}`);
+        const activeSection = `### Active Topic: ${activeTopic} (${depth})\n${expanded}`;
+        parts.push(activeSection);
+        candidateTexts.push(activeSection);
         const entry = this.store.getAllL0().find((e) => e.topic === activeTopic);
         if (entry) usedIds.push(entry.id);
       }
@@ -125,7 +185,7 @@ export class HAMRetriever {
       text = this.trimToTokenBudget(text, activeTopic);
     }
 
-    return { text, ids: usedIds };
+    return { text, ids: usedIds, candidateTexts };
   }
 
   /**

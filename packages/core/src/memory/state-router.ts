@@ -1,3 +1,56 @@
+import type { NeuralState } from './interface.js';
+
+// ---------------------------------------------------------------------------
+// Dual-process cognitive routing
+// ---------------------------------------------------------------------------
+
+/**
+ * System 1 — fast, low-surprise, routine response generation.
+ * System 2 — slow, high-surprise, deliberative step-by-step reasoning loop.
+ */
+export type ProcessMode = 'SYSTEM_1' | 'SYSTEM_2';
+
+/**
+ * Threshold for the astrocyteLevel above which the router escalates to
+ * System 2 (deep-thinking / research) mode.
+ * Exposed as a constant so callers and tests can reference the same value.
+ */
+export const ASTROCYTE_SYSTEM2_THRESHOLD = 0.6;
+
+/**
+ * System-prompt fragment injected into the LLM context when routing to System 2.
+ * The caller is responsible for prepending this to (or concatenating it with)
+ * its existing system prompt before submitting to the model.
+ */
+export const SYSTEM2_PROMPT =
+  'You are operating in deep-thinking mode due to a high-surprise signal from ' +
+  'the neural memory layer. Before composing your final answer you MUST:\n' +
+  '1. Restate the core question in your own words.\n' +
+  '2. Identify the key unknowns or ambiguities.\n' +
+  '3. Enumerate the relevant facts or sub-problems you need to resolve.\n' +
+  '4. Work through each sub-problem step-by-step, citing your reasoning.\n' +
+  '5. Only after completing steps 1–4, compose your final, concise answer.\n' +
+  'Do not skip any step. Show your reasoning explicitly.';
+
+/**
+ * Result returned by {@link StateRouter.routeByAstrocyte}.
+ */
+export interface DualProcessDecision {
+  /** Which cognitive mode the agent should use for this turn. */
+  mode: ProcessMode;
+  /**
+   * When `mode` is `'SYSTEM_2'`, contains the step-by-step reasoning prompt
+   * to prepend to the LLM system prompt. `undefined` when `mode` is `'SYSTEM_1'`.
+   */
+  systemPromptInjection?: string;
+  /** The astrocyte level that triggered this decision (for logging/tracing). */
+  astrocyteLevel: number;
+}
+
+// ---------------------------------------------------------------------------
+// ConversationState
+// ---------------------------------------------------------------------------
+
 export type ConversationState =
   | 'INTRO'
   | 'PROBLEM'
@@ -147,5 +200,47 @@ export class StateRouter {
   /** Map state → retrieval depth */
   getRetrievalDepth(state: ConversationState): RetrievalDepth {
     return DEPTH_MAP[state];
+  }
+
+  // ── Dual-process routing ──────────────────────────────────────────────────
+
+  /**
+   * Inspect the current {@link NeuralState} and decide which cognitive process
+   * mode to use for this agent turn.
+   *
+   * - **System 1** (`astrocyteLevel < 0.6`): Low surprise / routine task.
+   *   The agent proceeds directly to response generation without extra scaffolding.
+   *
+   * - **System 2** (`astrocyteLevel >= 0.6`): High surprise / complex task.
+   *   Generation is intercepted. A structured step-by-step reasoning prompt is
+   *   returned in `systemPromptInjection` for the caller to prepend to the LLM
+   *   system prompt before submitting to the model.
+   *
+   * @param neuralState - The {@link NeuralState} produced by the current
+   *                      retrieval cycle (from `HAMRetriever.retrieve()`).
+   * @returns           A {@link DualProcessDecision} describing the routing choice.
+   */
+  routeByAstrocyte(neuralState: NeuralState): DualProcessDecision {
+    const { astrocyteLevel } = neuralState;
+
+    if (astrocyteLevel < ASTROCYTE_SYSTEM2_THRESHOLD) {
+      // System 1 — fast path: routine task, respond immediately
+      return {
+        mode: 'SYSTEM_1',
+        astrocyteLevel,
+      };
+    }
+
+    // System 2 — slow path: high surprise, route to deep-thinking loop
+    console.log(
+      `[StateRouter] astrocyteLevel=${astrocyteLevel.toFixed(4)} >= ${ASTROCYTE_SYSTEM2_THRESHOLD} ` +
+        '— escalating to System 2 (deep-thinking / research loop).',
+    );
+
+    return {
+      mode: 'SYSTEM_2',
+      systemPromptInjection: SYSTEM2_PROMPT,
+      astrocyteLevel,
+    };
   }
 }
