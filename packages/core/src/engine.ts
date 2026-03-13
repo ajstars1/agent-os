@@ -105,7 +105,24 @@ export class AgentEngine {
     private readonly hamCompressor?: HAMCompressor | null,
     semanticGraph?: SemanticGraph,
   ) {
-    this._semanticGraph = semanticGraph ?? new SemanticGraph();
+    this._semanticGraph = semanticGraph ?? new SemanticGraph({
+      llm: {
+        complete: async (systemPrompt: string, userPrompt: string) => {
+          const provider = await router.route(userPrompt);
+          let text = '';
+          if (provider === 'gemini' && gemini) {
+            for await (const chunk of gemini.stream([{ role: 'user', parts: [{ text: userPrompt }] }], systemPrompt)) {
+              if (chunk.type === 'text' && chunk.content) text += chunk.content;
+            }
+          } else {
+            for await (const chunk of claude.stream([{ role: 'user', content: userPrompt }], systemPrompt)) {
+              if (chunk.type === 'text' && chunk.content) text += chunk.content;
+            }
+          }
+          return text;
+        }
+      }
+    });
   }
 
   getOrCreateConversation(channel: ChannelType, channelId: string): Conversation {

@@ -57,23 +57,13 @@ export interface NeuralResponse {
 
 /** POST /process_memory request body (extended for multi-candidate evaluation). */
 interface EvaluateRequest {
-  /** The search query or current working context. */
-  text: string;
-  /** Candidate memory strings to score against the query. */
-  candidate_memories: string[];
-  /** Current astrocyte state passed in so the engine can condition on it. */
-  current_state: number;
-  /** Session key reserved for future stateful use; use a stable caller ID. */
-  session_id: string;
+  query: string;
+  candidates: string[];
+  currentState: number;
+  sessionId: string;
 }
 
-/** Raw JSON shape returned by POST /process_memory for this call pattern. */
-interface RawEvaluateResponse {
-  /** Updated scalar astrocyte level. */
-  astrocyte_level: number;
-  /** Epanechnikov attention weights — one per candidate memory. */
-  attention_weights: number[];
-}
+// We no longer need RawEvaluateResponse because the server sends camelCase `NeuralResponse` shape directly.
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -141,10 +131,10 @@ export class NeuralClient {
     }
 
     const payload: EvaluateRequest = {
-      text: query,
-      candidate_memories: candidateMemories,
-      current_state: currentState,
-      session_id: 'neural-client-eval',
+      query,
+      candidates: candidateMemories,
+      currentState,
+      sessionId: 'neural-client-eval',
     };
 
     try {
@@ -160,7 +150,7 @@ export class NeuralClient {
         throw new Error(`[NeuralClient] POST /process_memory failed: ${res.status} ${res.statusText}\n${errorText}`);
       }
 
-      const raw = (await res.json()) as RawEvaluateResponse;
+      const raw = (await res.json()) as NeuralResponse;
       return this._toResponse(raw, candidateMemories.length);
     } catch (err) {
       if (this._isTimeout(err)) {
@@ -190,16 +180,14 @@ export class NeuralClient {
   // -------------------------------------------------------------------------
 
   /**
-   * Map the raw snake_case API response to the camelCase {@link NeuralResponse}.
-   * If the engine returns fewer weights than candidates (e.g. it truncated),
-   * the remaining weights are padded with `0` to keep array lengths aligned.
+   * Ensure response has enough weights by padding with 0.
    */
-  private _toResponse(raw: RawEvaluateResponse, candidateCount: number): NeuralResponse {
+  private _toResponse(raw: NeuralResponse, candidateCount: number): NeuralResponse {
     const weights = Array.from({ length: candidateCount }, (_, i) =>
-      raw.attention_weights[i] ?? 0,
+      raw.attentionWeights[i] ?? 0,
     );
     return {
-      astrocyteLevel: raw.astrocyte_level,
+      astrocyteLevel: raw.astrocyteLevel,
       attentionWeights: weights,
     };
   }

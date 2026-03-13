@@ -78,17 +78,20 @@ class InferenceResponse(BaseModel):
 
 class MemoryRequest(BaseModel):
     """Payload for the /process_memory endpoint."""
-
-    text: str
-    """Raw text to embed and process (max 2 048 characters enforced server-side)."""
-
-    session_id: str
-    """Opaque session identifier used to look up / store astrocyte state."""
+    query: str
+    candidates: list[str]
+    currentState: float = 0.0
+    sessionId: str = "default"
 
     model_config = {
         "json_schema_extra": {
             "examples": [
-                {"text": "What is the capital of France?", "session_id": "session-abc123"}
+                {
+                    "query": "What is the capital of France?",
+                    "candidates": ["Paris is the capital", "London is the capital"],
+                    "currentState": 0.5,
+                    "sessionId": "session-abc123"
+                }
             ]
         }
     }
@@ -96,13 +99,8 @@ class MemoryRequest(BaseModel):
 
 class MemoryResponse(BaseModel):
     """Response from the /process_memory endpoint."""
-
-    session_id: str
-    output_shape: list[int]
-    """Shape of the ASE layer output tensor, e.g. [1, 12, 64]."""
-
-    astrocyte_state: list[float]
-    """Updated per-sample astrocyte state after processing this request."""
+    astrocyteLevel: float
+    attentionWeights: list[float]
 
 
 class SleepRequest(BaseModel):
@@ -195,69 +193,70 @@ async def infer(request: InferenceRequest) -> InferenceResponse:
 
 @app.post("/process_memory", response_model=MemoryResponse, tags=["memory"])
 async def process_memory(request: MemoryRequest) -> MemoryResponse:
-    """Embed *text*, run it through the AstroSymbolicEpisodicLayer, and
-    return the output shape together with the updated astrocyte state.
+    if not request.query:
+        raise HTTPException(status_code=422, detail="`query` must be a non-empty string")
 
-    The astrocyte state is persisted in-process keyed by *session_id*, so
-    repeated calls within the same session accumulate novelty history.
-    """
-    if not request.text:
-        raise HTTPException(status_code=422, detail="`text` must be a non-empty string")
-
-    # Truncate to keep embeddings manageable in this prototype.
     TEXT_LIMIT = 2048
-    text = request.text[:TEXT_LIMIT]
+    query_text = request.query[:TEXT_LIMIT]
+    
+    from engine.primitives import epanechnikov_attention
 
     try:
-        # ------------------------------------------------------------------
-        # Step 1: Character-level embedding
-        # Convert each character to its byte value (0-255), then embed.
-        # Shape: (1, T, D_MODEL)
-        # ------------------------------------------------------------------
         byte_ids = torch.tensor(
-            [b % 256 for b in text.encode("utf-8")],
+            [b % 256 for b in query_text.encode("utf-8")],
             dtype=torch.long,
-        ).unsqueeze(0)  # (1, T)
+        ).unsqueeze(0)
 
         with torch.no_grad():
-            embedded = _EMBEDDING(byte_ids)  # (1, T, D_MODEL)
+            q_emb = _EMBEDDING(byte_ids)
+            q_mean = q_emb.mean(dim=1, keepdim=True)
 
-        # ------------------------------------------------------------------
-        # Step 2: Retrieve or initialise per-session astrocyte state
-        # Shape: (1,) — one sample in the batch
-        # ------------------------------------------------------------------
+        weights = []
+        if request.candidates:
+            k_means = []
+            for cand in request.candidates:
+                cand_text = cand[:TEXT_LIMIT]
+                cand_byte_ids = torch.tensor(
+                    [b % 256 for b in cand_text.encode("utf-8")],
+                    dtype=torch.long,
+                ).unsqueeze(0)
+                with torch.no_grad():
+                    c_emb = _EMBEDDING(cand_byte_ids)
+                    k_means.append(c_emb.mean(dim=1))
+            
+            k_tensor = torch.stack(k_means, dim=1)
+            with torch.no_grad():
+                att = epanechnikov_attention(q_mean, k_tensor)
+                weights = att.squeeze(0).squeeze(0).tolist()
+                
+            if not isinstance(weights, list):
+                weights = [weights] if isinstance(weights, float) else list(weights)
+
         astro_state = _SESSION_STATES.get(
-            request.session_id,
+            request.sessionId,
             _ASE_LAYER.initial_astrocyte_state(batch_size=1),
         )
 
-        # ------------------------------------------------------------------
-        # Step 3: ASE forward pass — self-attention (Q = K = V = embedding)
-        # ------------------------------------------------------------------
         _ASE_LAYER.eval()
         with torch.no_grad():
-            output, new_astro_state = _ASE_LAYER(
-                q_in=embedded,
-                k_in=embedded,
-                v_in=embedded,
+            _, new_astro_state = _ASE_LAYER(
+                q_in=q_emb,
+                k_in=q_emb,
+                v_in=q_emb,
                 astrocyte_state=astro_state,
             )
 
-        # ------------------------------------------------------------------
-        # Step 4: Persist updated astrocyte state for this session
-        # ------------------------------------------------------------------
-        _SESSION_STATES[request.session_id] = new_astro_state.detach()
+        _SESSION_STATES[request.sessionId] = new_astro_state.detach()
 
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return MemoryResponse(
-        session_id=request.session_id,
-        output_shape=list(output.shape),
-        astrocyte_state=new_astro_state.tolist(),
-    )
+    return {
+        "astrocyteLevel": float(new_astro_state.view(-1)[0].item()),
+        "attentionWeights": weights,
+    }
 
 
 @app.post("/trigger_sleep", response_model=SleepResponse, tags=["memory"])

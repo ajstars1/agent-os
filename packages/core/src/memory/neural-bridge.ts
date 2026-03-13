@@ -30,19 +30,16 @@
 
 /** Request body sent to POST /process_memory */
 export interface NeuralMemoryRequest {
-  /** The working-context text to process. */
-  text: string;
-  /** Opaque session identifier; the server maintains astrocyte state per key. */
-  session_id: string;
+  query: string;
+  candidates: string[];
+  currentState: number;
+  sessionId: string;
 }
 
 /** Successful response from POST /process_memory */
 export interface NeuralMemoryResponse {
-  session_id: string;
-  /** 3-D shape of the ASE output tensor: [batch, seq_len, d_model] */
-  output_shape: [number, number, number];
-  /** Updated astrocyte state — one float per sample in the batch */
-  astrocyte_state: number[];
+  astrocyteLevel: number;
+  attentionWeights: number[];
 }
 
 /**
@@ -51,10 +48,8 @@ export interface NeuralMemoryResponse {
  */
 export interface NeuralMemoryResult {
   sessionId: string;
-  /** [batch, seq_len, d_model] */
-  outputShape: [number, number, number];
-  /** Per-sample astrocyte state values */
-  astrocyteState: number[];
+  astrocyteLevel: number;
+  attentionWeights: number[];
 }
 
 /** Status response from GET /health */
@@ -113,15 +108,17 @@ export class NeuralBridge {
    * @returns         Parsed {@link NeuralMemoryResult}, or `null` on any error.
    */
   async processMemory(
-    text: string,
+    query: string,
+    candidates: string[],
+    currentState: number,
     sessionId: string,
   ): Promise<NeuralMemoryResult | null> {
-    if (!text.trim()) {
-      console.warn('[NeuralBridge] processMemory called with empty text — skipping.');
+    if (!query.trim()) {
+      console.warn('[NeuralBridge] processMemory called with empty query — skipping.');
       return null;
     }
 
-    const payload: NeuralMemoryRequest = { text, session_id: sessionId };
+    const payload: NeuralMemoryRequest = { query, candidates, currentState, sessionId };
 
     try {
       const res = await fetch(`${this.baseUrl}/process_memory`, {
@@ -140,7 +137,7 @@ export class NeuralBridge {
       }
 
       const data = (await res.json()) as NeuralMemoryResponse;
-      return this._toResult(data);
+      return this._toResult(data, sessionId);
     } catch (err) {
       console.error('[NeuralBridge] Network error in processMemory:', err);
       return null;
@@ -159,19 +156,18 @@ export class NeuralBridge {
     context: string,
     sessionId: string,
   ): Promise<NeuralMemoryResult | null> {
-    return this.processMemory(context, sessionId);
+    return this.processMemory(context, [], 0, sessionId);
   }
 
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
 
-  /** Convert snake_case API response to camelCase TypeScript result. */
-  private _toResult(raw: NeuralMemoryResponse): NeuralMemoryResult {
+  private _toResult(raw: NeuralMemoryResponse, sessionId: string): NeuralMemoryResult {
     return {
-      sessionId: raw.session_id,
-      outputShape: raw.output_shape,
-      astrocyteState: raw.astrocyte_state,
+      sessionId,
+      astrocyteLevel: raw.astrocyteLevel,
+      attentionWeights: raw.attentionWeights,
     };
   }
 }
