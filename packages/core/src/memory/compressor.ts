@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import type { TieredStore, KnowledgeChunk } from './tiered-store.js';
 
-const MODEL = 'gemini-2.0-flash';
+const MODEL = 'gemini-3.1-flash-lite-preview';
 
 const L0_TOKENS = 8;    // 5–10 tokens target
 const L1_TOKENS = 35;   // 20–50 tokens target
@@ -13,13 +13,13 @@ function contentHash(text: string): string {
 }
 
 export class HAMCompressor {
-  private readonly genAI: GoogleGenerativeAI;
+  private readonly ai: GoogleGenAI;
 
   constructor(
     apiKey: string,
     private readonly store: TieredStore,
   ) {
-    this.genAI = new GoogleGenerativeAI(apiKey);
+    this.ai = new GoogleGenAI({ apiKey });
   }
 
   /**
@@ -53,7 +53,6 @@ export class HAMCompressor {
     targetTokens: number,
     description: string,
   ): Promise<string> {
-    const model = this.genAI.getGenerativeModel({ model: MODEL });
     const prompt = `Compress the following text into a ${description} of approximately ${targetTokens} tokens.
 Write ONLY the compressed output — no preamble, no labels, no quotes.
 
@@ -61,13 +60,14 @@ Text to compress:
 ${text.slice(0, 8000)}`;
 
     try {
-      const result = await model.generateContent(prompt);
-      return result.response.text().trim();
-    } catch (err: unknown) {
-      // Fallback: truncate text to approximate target
-      const approxChars = targetTokens * 4;
+      const response = await this.ai.models.generateContent({
+        model: MODEL,
+        contents: prompt,
+      });
+      return (response.text ?? '').trim();
+    } catch {
       const words = text.split(/\s+/).slice(0, Math.ceil(targetTokens * 0.75));
-      return words.join(' ').slice(0, approxChars);
+      return words.join(' ').slice(0, targetTokens * 4);
     }
   }
 }

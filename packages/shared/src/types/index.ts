@@ -40,9 +40,11 @@ export interface ToolResult {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done';
+  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done' | 'thinking';
   content?: string;
   provider?: LLMProvider;
+  /** Resolved Gemini variant (e.g. 'gemini:flash-thinking') when auto-routing selects one. */
+  model?: string;
   toolCall?: ToolCall;
   toolResult?: ToolResult;
   usage?: {

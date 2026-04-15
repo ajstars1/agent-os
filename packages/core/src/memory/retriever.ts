@@ -86,7 +86,7 @@ export class HAMRetriever {
 
         finalMemory = survived.join('\n\n');
       } catch (err) {
-        process.stderr.write('Neural Engine unreachable, falling back to standard retrieval\n');
+        // Neural engine not running — silent fallback to standard retrieval
       }
     }
     // ─────────────────────────────────────────────────────────────────────────

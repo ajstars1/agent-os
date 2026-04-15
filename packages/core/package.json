@@ -22,7 +22,7 @@
   "dependencies": {
     "@agent-os/shared": "*",
     "@anthropic-ai/sdk": "^0.40.0",
-    "@google/generative-ai": "^0.24.0",
+    "@google/genai": "^1.50.1",
     "@modelcontextprotocol/sdk": "^1.25.3",
     "better-sqlite3": "^11.7.0",
     "chokidar": "^4.0.3",

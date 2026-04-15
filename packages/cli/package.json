@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "bin": {
-    "agent": "./dist/index.js"
+    "agent": "./dist/index.js",
+    "ask": "./dist/ask.js"
   },
   "scripts": {
     "build": "tsc",
@@ -16,8 +17,11 @@
   "dependencies": {
     "@agent-os/core": "*",
     "@agent-os/shared": "*",
+    "@types/react": "^19.2.14",
     "chalk": "^5.4.1",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "ink": "^6.8.0",
+    "react": "^19.2.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

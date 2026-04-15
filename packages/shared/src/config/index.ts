@@ -25,7 +25,10 @@ const configSchema = z.object({
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const result = configSchema.safeParse(env);
   if (!result.success) {
-    throw new Error(`Invalid configuration:\n${result.error.toString()}`);
+    const missing = result.error.issues
+      .map((i) => `  • ${i.path.join('.')}: ${i.message}`)
+      .join('\n');
+    throw new Error(`Missing or invalid config:\n${missing}`);
   }
   return result.data as Config;
 }

@@ -22,10 +22,13 @@ describe('SkillLoader', () => {
     rmSync(dirname(claudeMdPath), { recursive: true, force: true });
   });
 
-  it('loads empty context when dirs do not exist', async () => {
+  it('loads no skills when dirs do not exist', async () => {
     const loader = new SkillLoader('/nonexistent/skills', '/nonexistent/CLAUDE.md', logger);
     await loader.load();
-    expect(loader.getSystemContext()).toBe('');
+    // Context may include auto-detected project CLAUDE.md from cwd walk-up,
+    // but should not contain any skills (no # Skill: lines)
+    const ctx = loader.getSystemContext();
+    expect(ctx).not.toContain('# Skill:');
   });
 
   it('loads CLAUDE.md content', async () => {
@@ -41,10 +44,12 @@ describe('SkillLoader', () => {
     writeFileSync(join(skillsDir, 'design.md'), '# Design skill\nThink visually.');
     const loader = new SkillLoader(skillsDir, '/nonexistent/CLAUDE.md', logger);
     await loader.load();
-    const ctx = loader.getSystemContext();
-    expect(ctx).toContain('Skill: coding');
-    expect(ctx).toContain('Write clean code.');
-    expect(ctx).toContain('Skill: design');
+    // Full skill content is private — access via getSkillContent() and getSkillNames()
+    expect(loader.getSkillNames()).toContain('coding');
+    expect(loader.getSkillNames()).toContain('design');
+    expect(loader.getSkillContent('coding')).toContain('Write clean code.');
+    // System context only includes a compact stub line, not the full content
+    expect(loader.getSystemContext()).toContain('/coding');
   });
 
   it('loads SKILL.md from subdirectories', async () => {
@@ -53,18 +58,19 @@ describe('SkillLoader', () => {
     writeFileSync(join(subDir, 'SKILL.md'), '# TypeScript expertise');
     const loader = new SkillLoader(skillsDir, '/nonexistent/CLAUDE.md', logger);
     await loader.load();
-    expect(loader.getSystemContext()).toContain('Skill: typescript');
-    expect(loader.getSystemContext()).toContain('TypeScript expertise');
+    expect(loader.getSkillNames()).toContain('typescript');
+    expect(loader.getSkillContent('typescript')).toContain('TypeScript expertise');
+    expect(loader.getSystemContext()).toContain('/typescript');
   });
 
   it('reloads context when load() called again', async () => {
     writeFileSync(join(skillsDir, 'a.md'), 'Version 1');
     const loader = new SkillLoader(skillsDir, '/nonexistent/CLAUDE.md', logger);
     await loader.load();
-    expect(loader.getSystemContext()).toContain('Version 1');
+    expect(loader.getSkillContent('a')).toContain('Version 1');
 
     writeFileSync(join(skillsDir, 'a.md'), 'Version 2');
     await loader.load();
-    expect(loader.getSystemContext()).toContain('Version 2');
+    expect(loader.getSkillContent('a')).toContain('Version 2');
   });
 });

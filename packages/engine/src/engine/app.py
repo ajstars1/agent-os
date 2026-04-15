@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -12,13 +15,42 @@ from pydantic import BaseModel
 
 from engine import __version__
 from engine.ase_layer import AstroSymbolicEpisodicLayer
+from engine.bg_learner import BackgroundLearner
 from engine.consolidation import MemoryConsolidator
 from engine.model import NeuralEngine
+
+# ---------------------------------------------------------------------------
+# Background learner — reads companion.db path from env or default
+# ---------------------------------------------------------------------------
+
+def _resolve_companion_db() -> str:
+    raw = os.environ.get(
+        "COMPANION_DB_PATH",
+        os.path.join(Path.home(), ".agent-os", "companion.db"),
+    )
+    return str(Path(raw).expanduser())
+
+
+_LEARNER: BackgroundLearner | None = None
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
+    global _LEARNER
+    db_path = _resolve_companion_db()
+    google_api_key = os.environ.get("GOOGLE_API_KEY")
+    _LEARNER = BackgroundLearner(db_path, google_api_key=google_api_key)
+    await _LEARNER.start()
+    yield
+    if _LEARNER:
+        await _LEARNER.stop()
+
 
 app = FastAPI(
     title="AgentOS Neural Engine",
     description="Custom PyTorch-based neural engine for AgentOS inference.",
     version=__version__,
+    lifespan=_lifespan,
 )
 
 app.add_middleware(
@@ -257,6 +289,30 @@ async def process_memory(request: MemoryRequest) -> MemoryResponse:
         "astrocyteLevel": float(new_astro_state.view(-1)[0].item()),
         "attentionWeights": weights,
     }
+
+
+@app.get("/learner/stats", tags=["learner"])
+async def learner_stats() -> dict[str, Any]:
+    """Current background learner statistics — memory health, pass timestamps."""
+    if _LEARNER is None:
+        raise HTTPException(status_code=503, detail="Learner not started")
+    return _LEARNER.get_stats()
+
+
+@app.get("/learner/predictions", tags=["learner"])
+async def learner_predictions() -> list[dict[str, Any]]:
+    """Today's topic predictions — what the user will likely need."""
+    if _LEARNER is None:
+        return []
+    return _LEARNER.get_predictions()
+
+
+@app.get("/learner/hot-topics", tags=["learner"])
+async def learner_hot_topics(limit: int = 10) -> list[dict[str, Any]]:
+    """Current interest map — topics ranked by recency-weighted frequency."""
+    if _LEARNER is None:
+        return []
+    return _LEARNER.get_hot_topics(limit=min(limit, 50))
 
 
 @app.post("/trigger_sleep", response_model=SleepResponse, tags=["memory"])
