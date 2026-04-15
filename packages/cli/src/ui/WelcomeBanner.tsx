@@ -43,48 +43,49 @@ export function WelcomeBanner({ projectName, model, skillCount, memoryCount }: P
   const git = getGitInfo();
 
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor="magenta" padding={1} paddingX={2} marginBottom={1}>
       {/* Logo */}
-      {LOGO.split('\n').map((line, i) => (
-        <Text key={i} color="magenta">{'  '}{line}</Text>
-      ))}
+      <Box justifyContent="center" marginBottom={1}>
+        <Box flexDirection="column">
+          {LOGO.split('\n').map((line, i) => (
+            <Text key={i} color="magenta" bold>{line}</Text>
+          ))}
+        </Box>
+      </Box>
 
       {/* Metadata row 1: project + cwd */}
-      <Box marginTop={1}>
-        <Text dimColor>{'  project  '}</Text>
+      <Box justifyContent="center" marginBottom={1}>
+        <Text dimColor>{'project '}</Text>
         <Text bold color="white">{projectName}</Text>
-        <Text dimColor>{'    cwd  '}</Text>
+        <Text dimColor>{'  |  cwd '}</Text>
         <Text dimColor>{cwdShort}</Text>
       </Box>
 
       {/* Metadata row 2: model + git + skills + memory */}
-      <Box>
-        <Text dimColor>{'  model    '}</Text>
+      <Box justifyContent="center" marginBottom={1}>
+        <Text dimColor>{'model '}</Text>
         <Text color="cyan">{model}</Text>
         {git && (
-          <>
-            <Text dimColor>{'    git  '}</Text>
+          <Box>
+            <Text dimColor>{'  |  git '}</Text>
             <Text color={git.dirty ? 'yellow' : 'green'}>{git.branch}</Text>
-            {git.dirty && <Text color="yellow">{'*'}</Text>}
+            {git.dirty && <Text color="yellow" bold>{'*'}</Text>}
             {git.ahead > 0 && <Text dimColor>{` ↑${git.ahead}`}</Text>}
-          </>
+          </Box>
         )}
-        <Text dimColor>{'    skills  '}</Text>
-        <Text dimColor>{String(skillCount)}</Text>
-        <Text dimColor>{'    memory  '}</Text>
-        <Text dimColor>{String(memoryCount)} topics</Text>
+        <Text dimColor>{'  |  skills '}</Text>
+        <Text color="white">{String(skillCount)}</Text>
+        <Text dimColor>{'  |  memory '}</Text>
+        <Text color="white">{String(memoryCount)}</Text>
       </Box>
 
-      {/* Divider */}
-      <Text dimColor>{'  ' + '─'.repeat(52)}</Text>
-
       {/* Tips */}
-      <Box>
-        <Text dimColor>{'  type a message, or '}</Text>
-        <Text color="cyan">/help</Text>
-        <Text dimColor>{' for commands, '}</Text>
-        <Text color="cyan">/skillname</Text>
-        <Text dimColor>{' to invoke a skill'}</Text>
+      <Box justifyContent="center" borderStyle="single" borderTop={true} borderBottom={false} borderLeft={false} borderRight={false} borderColor="dim" paddingTop={1}>
+        <Text dimColor>{'Type a message, or '}</Text>
+        <Text color="cyan" bold>/help</Text>
+        <Text dimColor>{' for commands. Start with '}</Text>
+        <Text color="cyan" bold>/</Text>
+        <Text dimColor>{' to see skills.'}</Text>
       </Box>
     </Box>
   );

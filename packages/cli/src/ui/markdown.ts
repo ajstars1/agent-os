@@ -36,19 +36,20 @@ export function renderMarkdown(md: string): string {
     // ── Fenced code blocks ────────────────────────────────────────────────────
     if (raw.startsWith('```')) {
       if (inCodeBlock) {
-        // End of code block — emit with dim styling
-        out.push(dim('  ┌─'));
+        // End of code block
+        if (codeLang) out.push(dim(`╭─ ${codeLang} `) + dim('─'.repeat(40)));
+        else out.push(dim('╭') + dim('─'.repeat(45)));
+        
         for (const cl of codeLines) {
-          out.push(`  ${dim('│')} ${cl}`);
+          out.push(`${dim('│')} ${cl}`);
         }
-        out.push(dim('  └─'));
+        out.push(dim('╰') + dim('─'.repeat(45)));
         codeLines = [];
         inCodeBlock = false;
         codeLang = '';
       } else {
         inCodeBlock = true;
         codeLang = raw.slice(3).trim();
-        if (codeLang) out.push(dim(`  [${codeLang}]`));
       }
       continue;
     }
@@ -63,7 +64,7 @@ export function renderMarkdown(md: string): string {
     const h2 = raw.match(/^##\s+(.*)/);
     const h1 = raw.match(/^#\s+(.*)/);
     if (h1) { out.push('\n' + bold(yellow(h1[1] ?? '')) + '\n'); continue; }
-    if (h2) { out.push('\n' + bold(h2[1] ?? '') + '\n'); continue; }
+    if (h2) { out.push('\n' + bold(cyan(h2[1] ?? '')) + '\n'); continue; }
     if (h3) { out.push(bold(h3[1] ?? '')); continue; }
 
     // ── Horizontal rule ───────────────────────────────────────────────────────
@@ -76,7 +77,7 @@ export function renderMarkdown(md: string): string {
     const bullet = raw.match(/^(\s*)[-*•]\s+(.*)/);
     if (bullet) {
       const indent = '  '.repeat(Math.floor((bullet[1]?.length ?? 0) / 2));
-      out.push(`${indent}  • ${inlineFormat(bullet[2] ?? '')}`);
+      out.push(`${indent}  ${cyan('•')} ${inlineFormat(bullet[2] ?? '')}`);
       continue;
     }
 
@@ -85,7 +86,7 @@ export function renderMarkdown(md: string): string {
     if (numbered) {
       const indent = '  '.repeat(Math.floor((numbered[1]?.length ?? 0) / 2));
       const num = raw.match(/\d+/)?.[0] ?? '1';
-      out.push(`${indent}  ${dim(num + '.')} ${inlineFormat(numbered[2] ?? '')}`);
+      out.push(`${indent}  ${cyan(num + '.')} ${inlineFormat(numbered[2] ?? '')}`);
       continue;
     }
 
@@ -102,9 +103,11 @@ export function renderMarkdown(md: string): string {
 
   // Flush unclosed code block
   if (inCodeBlock && codeLines.length > 0) {
-    out.push(dim('  ┌─'));
-    for (const cl of codeLines) out.push(`  ${dim('│')} ${cl}`);
-    out.push(dim('  └─'));
+    if (codeLang) out.push(dim(`╭─ ${codeLang} `) + dim('─'.repeat(40)));
+    else out.push(dim('╭') + dim('─'.repeat(45)));
+    
+    for (const cl of codeLines) out.push(`${dim('│')} ${cl}`);
+    out.push(dim('╰') + dim('─'.repeat(45)));
   }
 
   return out.join('\n');

@@ -17,7 +17,7 @@
  */
 
 import type { ClaudeClient } from '../llm/claude.js';
-import type { GeminiClient } from '../llm/gemini.js';
+import type { GeminiClient, GeminiVariant } from '../llm/gemini.js';
 import type { EpisodicStore } from '../memory/episodic-store.js';
 import type { Logger } from '@agent-os/shared';
 import { WorkerAgent } from './worker.js';
@@ -107,9 +107,9 @@ export class Orchestrator {
    * Main entry point. Yields progress events, resolves with the final response.
    * The caller (engine.ts) converts events to stream chunks.
    */
-  async *run(userMessage: string, conversationId: string): AsyncGenerator<OrchestratorEvent> {
+  async *run(userMessage: string, conversationId: string, preferredProvider?: 'claude' | 'gemini'): AsyncGenerator<OrchestratorEvent> {
     // ── Step 1: Classify ────────────────────────────────────────────────────
-    const complexity = await this.classify(userMessage);
+    const complexity = await this.classify(userMessage, preferredProvider);
     yield { type: 'classified', complexity };
 
     if (complexity === 'simple') {
@@ -119,7 +119,7 @@ export class Orchestrator {
     }
 
     // ── Step 2: Decompose ────────────────────────────────────────────────────
-    const subTasks = await this.decompose(userMessage);
+    const subTasks = await this.decompose(userMessage, preferredProvider);
     if (subTasks.length === 0) {
       // Decompose failed or returned empty — fall back to simple path
       yield { type: 'done', result: '' };
@@ -141,7 +141,7 @@ export class Orchestrator {
 
       // Run batch in parallel — route to specialist agents where available
       const batchResults = await Promise.all(
-        batch.map((task) => this.runTask(task)),
+        batch.map((task) => this.runTask(task, preferredProvider)),
       );
 
       for (const res of batchResults) {
@@ -152,7 +152,7 @@ export class Orchestrator {
 
     // ── Step 4: Reduce ───────────────────────────────────────────────────────
     yield { type: 'reducing' };
-    const synthesized = await this.reduce(userMessage, results);
+    const synthesized = await this.reduce(userMessage, results, preferredProvider);
 
     // ── Side-effect: write to episodic memory if result is substantial ───────
     if (synthesized.length > 200 && this.episodicStore) {
@@ -171,12 +171,23 @@ export class Orchestrator {
 
   // ── Task runner — routes to specialist or generic worker ───────────────────
 
-  private async runTask(task: SubTask): Promise<WorkerResult> {
+  private async runTask(task: SubTask, preferredProvider?: 'claude' | 'gemini'): Promise<WorkerResult> {
     const start = Date.now();
 
     try {
       let output: string;
 
+      // If user explicitly chose a provider, route all tasks through WorkerAgent
+      // which respects the preference — no hardcoded model overrides.
+      if (preferredProvider) {
+        const worker = new WorkerAgent(
+          { type: task.type, preferredProvider },
+          this.claude, this.gemini, this.logger,
+        );
+        return worker.run(task.instruction);
+      }
+
+      // Auto mode: use specialist agents with optimised per-type routing
       if (task.type === 'research' && this.gemini) {
         const agent = new ResearchAgent(this.gemini, this.logger);
         output = await agent.run(task.instruction);
@@ -211,26 +222,10 @@ export class Orchestrator {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  private async classify(message: string): Promise<RequestComplexity> {
+  private async classify(message: string, preferredProvider?: 'claude' | 'gemini'): Promise<RequestComplexity> {
     try {
-      const llm = this.gemini ?? null;
       const prompt = `${CLASSIFY_PROMPT}${message.slice(0, 600)}`;
-
-      let text = '';
-      if (llm) {
-        for await (const chunk of llm.stream(
-          [{ role: 'user', parts: [{ text: prompt }] }],
-          '',
-          'flash-lite',
-        )) {
-          if (chunk.type === 'text' && chunk.content) text += chunk.content;
-        }
-      } else {
-        for await (const chunk of this.claude.stream([{ role: 'user', content: prompt }], '')) {
-          if (chunk.type === 'text' && chunk.content) text += chunk.content;
-        }
-      }
-
+      const text = await this.streamText(prompt, '', preferredProvider, 'flash-lite');
       const answer = text.trim().toLowerCase();
       return answer.includes('complex') ? 'complex' : 'simple';
     } catch (err) {
@@ -239,24 +234,10 @@ export class Orchestrator {
     }
   }
 
-  private async decompose(message: string): Promise<SubTask[]> {
+  private async decompose(message: string, preferredProvider?: 'claude' | 'gemini'): Promise<SubTask[]> {
     try {
       const prompt = `${DECOMPOSE_PROMPT}${message.slice(0, 800)}`;
-
-      let text = '';
-      if (this.gemini) {
-        for await (const chunk of this.gemini.stream(
-          [{ role: 'user', parts: [{ text: prompt }] }],
-          '',
-          'flash',
-        )) {
-          if (chunk.type === 'text' && chunk.content) text += chunk.content;
-        }
-      } else {
-        for await (const chunk of this.claude.stream([{ role: 'user', content: prompt }], '')) {
-          if (chunk.type === 'text' && chunk.content) text += chunk.content;
-        }
-      }
+      const text = await this.streamText(prompt, '', preferredProvider, 'flash');
 
       const cleaned = text.trim()
         .replace(/^```(?:json)?\s*/i, '')
@@ -280,7 +261,7 @@ export class Orchestrator {
     }
   }
 
-  private async reduce(originalRequest: string, results: WorkerResult[]): Promise<string> {
+  private async reduce(originalRequest: string, results: WorkerResult[], preferredProvider?: 'claude' | 'gemini'): Promise<string> {
     const outputsBlock = results
       .map((r, i) => `### Worker ${i + 1} (${r.type})\n${r.output}`)
       .join('\n\n');
@@ -289,13 +270,47 @@ export class Orchestrator {
       .replace('{REQUEST}', originalRequest.slice(0, 600))
       .replace('{OUTPUTS}', outputsBlock);
 
-    let synthesized = '';
-    // Always use Claude for synthesis — better at instruction-following and structure
-    for await (const chunk of this.claude.stream([{ role: 'user', content: prompt }], '')) {
-      if (chunk.type === 'text' && chunk.content) synthesized += chunk.content;
-    }
-
+    const synthesized = await this.streamText(prompt, '', preferredProvider);
     return synthesized.trim() || results.map((r) => r.output).join('\n\n');
+  }
+
+  /**
+   * Route an LLM call through the user's preferred provider.
+   *
+   * - `'gemini'` → use Gemini if configured, otherwise fall back to Claude
+   * - `'claude'` → always Claude
+   * - `undefined` (auto) → prefer Gemini (cheaper / faster for internal tasks)
+   */
+  private async streamText(
+    prompt: string,
+    systemPrompt: string,
+    preferredProvider?: 'claude' | 'gemini',
+    geminiVariant: GeminiVariant = 'flash',
+  ): Promise<string> {
+    const useGemini = preferredProvider === 'gemini'
+      ? !!this.gemini
+      : preferredProvider === 'claude'
+        ? false
+        : !!this.gemini;
+
+    let text = '';
+    if (useGemini && this.gemini) {
+      for await (const chunk of this.gemini.stream(
+        [{ role: 'user', parts: [{ text: prompt }] }],
+        systemPrompt,
+        geminiVariant,
+      )) {
+        if (chunk.type === 'text' && chunk.content) text += chunk.content;
+      }
+    } else {
+      for await (const chunk of this.claude.stream(
+        [{ role: 'user', content: prompt }],
+        systemPrompt,
+      )) {
+        if (chunk.type === 'text' && chunk.content) text += chunk.content;
+      }
+    }
+    return text;
   }
 
   /** Split array into chunks of at most `size`. */

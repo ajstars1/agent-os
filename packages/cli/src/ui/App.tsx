@@ -347,29 +347,45 @@ export function App({
 
       {/* Live thinking block */}
       {thinkingText && status !== 'idle' && (
-        <Box flexDirection="column" marginLeft={2} marginBottom={0}>
-          <Text color="yellow" dimColor>{'  ◐ thinking…'}</Text>
-          {thinkingText.split('\n').slice(-4).map((line, i) => (
-            <Text key={i} dimColor>{`    ${line}`}</Text>
+        <Box flexDirection="column" marginLeft={2} marginTop={1} marginBottom={1} borderStyle="single" borderColor="dim" borderTop={false} borderBottom={false} borderRight={false} paddingLeft={1}>
+          <Text dimColor color="yellow" bold>{'◐ Thought Process'}</Text>
+          {thinkingText.split('\n').slice(-10).map((line, i) => (
+            <Text key={i} dimColor>{line}</Text>
           ))}
         </Box>
       )}
 
       {/* Live streaming text */}
       {streaming && (
-        <Box flexDirection="column" paddingLeft={2}>
-          {renderMarkdown(streaming).split('\n').map((line, i) => (
-            <Text key={i}>{line}</Text>
-          ))}
+        <Box 
+          flexDirection="column" 
+          marginTop={1} 
+          marginBottom={1}
+          borderStyle="round" 
+          borderColor={provider === 'gemini' ? 'green' : 'blue'}
+          paddingX={1}
+        >
+          <Box marginBottom={1}>
+            <Text dimColor color={provider === 'gemini' ? 'green' : 'blue'}>
+              {'✦ '}{provider.charAt(0).toUpperCase() + provider.slice(1)}
+            </Text>
+          </Box>
+          <Box flexDirection="column">
+            {renderMarkdown(streaming).split('\n').map((line, i) => (
+              <Text key={i}>{line}</Text>
+            ))}
+          </Box>
         </Box>
       )}
 
       {/* Active tool calls */}
       {activeTools.map((tool) => (
-        <Box key={tool.id} marginLeft={2}>
-          <Text color="cyan">{'  ⠿ '}</Text>
-          <Text color="cyan">{tool.name}</Text>
-          {tool.preview ? <Text dimColor>{'  '}{tool.preview}</Text> : null}
+        <Box key={tool.id} flexDirection="column" marginTop={1} marginLeft={2}>
+          <Box>
+            <Text color="yellow">{'⚙ '}</Text>
+            <Text color="yellow" bold>{tool.name}</Text>
+            {tool.preview ? <Text dimColor>{'  '}{tool.preview}</Text> : null}
+          </Box>
         </Box>
       ))}
 

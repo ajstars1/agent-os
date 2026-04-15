@@ -60,42 +60,39 @@ export function StatusBar({
   const cwdShort = cwd.replace(homedir(), '~');
   const finalSec = (finalElapsedMs / 1000).toFixed(1);
   const hasTokens = inputTokens > 0 || outputTokens > 0;
-  const providerColor: 'green' | 'cyan' = provider === 'gemini' ? 'green' : 'cyan';
+  const providerColor = provider === 'gemini' ? 'green' : 'blue';
   const modelLabel = resolvedModel ?? provider;
   const statusLabel = status === 'thinking' ? 'thinking…' : 'responding…';
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginTop={1}>
       <Box
-        borderStyle="single"
-        borderTop
-        borderBottom={false}
-        borderLeft={false}
-        borderRight={false}
+        borderStyle="round"
+        borderColor="dim"
         paddingX={1}
       >
         {isActive ? (
-          <>
+          <Box>
             <Text color="yellow">{spinnerFrame} </Text>
-            <Text color={providerColor}>{modelLabel}</Text>
+            <Text color={providerColor} bold>{modelLabel}</Text>
             <Text dimColor>{'  '}{statusLabel}</Text>
             {liveElapsed ? <Text dimColor>{'  · '}{liveElapsed}</Text> : null}
-          </>
+          </Box>
         ) : (
-          <>
+          <Box>
             <Text dimColor>{cwdShort}</Text>
             {hasTokens && (
               <Text dimColor>
                 {'  '}{inputTokens.toLocaleString()}{'↑ '}{outputTokens.toLocaleString()}{'↓  '}{finalSec}{'s'}
               </Text>
             )}
-          </>
-        )}
-        {!isActive && skillSuggestions.length > 0 && (
-          <Text dimColor>
-            {'  💡 '}
-            {skillSuggestions.join('  ')}
-          </Text>
+            {skillSuggestions.length > 0 && (
+              <Text dimColor>
+                {'  💡 '}
+                {skillSuggestions.join('  ')}
+              </Text>
+            )}
+          </Box>
         )}
       </Box>
     </Box>

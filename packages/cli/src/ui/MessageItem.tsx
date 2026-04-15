@@ -36,23 +36,34 @@ export function MessageItem({ message }: Props): React.ReactElement {
   switch (message.type) {
     case 'user':
       return (
-        <Box marginTop={1}>
-          <Text bold color="white">{'  > '}</Text>
-          <Text color="white">{message.text}</Text>
+        <Box marginTop={1} marginLeft={1}>
+          <Text bold color="cyan">{'❯ '}</Text>
+          <Text bold color="white">{message.text}</Text>
         </Box>
       );
 
     case 'assistant': {
       const rendered = renderMarkdown(message.text);
-      const providerColor: 'green' | 'cyan' = message.provider === 'gemini' ? 'green' : 'cyan';
+      const providerColor = message.provider === 'gemini' ? 'green' : 'blue';
+      const providerName = message.provider.charAt(0).toUpperCase() + message.provider.slice(1);
+      
       return (
-        <Box flexDirection="column" marginTop={1} marginBottom={1} paddingLeft={2}>
-          {rendered.split('\n').map((line, i) => (
-            <Text key={i}>{line}</Text>
-          ))}
-          <Text dimColor color={providerColor} >
-            {'─── '}{message.provider}
-          </Text>
+        <Box 
+          flexDirection="column" 
+          marginTop={1} 
+          marginBottom={1}
+          borderStyle="round" 
+          borderColor={providerColor}
+          paddingX={1}
+        >
+          <Box marginBottom={1}>
+            <Text dimColor color={providerColor}>{'✦ '}{providerName}</Text>
+          </Box>
+          <Box flexDirection="column">
+            {rendered.split('\n').map((line, i) => (
+              <Text key={i}>{line}</Text>
+            ))}
+          </Box>
         </Box>
       );
     }
@@ -64,20 +75,24 @@ export function MessageItem({ message }: Props): React.ReactElement {
           ? `${(message.elapsed / 1000).toFixed(1)}s`
           : `${message.elapsed}ms`
         : '';
-      const resultStr = message.result ? `  ${message.result}` : '';
+      
+      const borderColor = message.isError ? 'red' : 'dim';
+      const resultColor = message.isError ? 'red' : undefined;
 
       return (
-        <Box flexDirection="column" marginLeft={2}>
+        <Box flexDirection="column" marginTop={1} marginLeft={2}>
           <Box>
-            <Text color={message.isError ? 'red' : 'cyan'}>
-              {message.isError ? '  ✗ ' : '  ✓ '}
+            <Text color={message.isError ? 'red' : 'yellow'}>
+              {message.isError ? '✗ ' : '⚙ '}
             </Text>
-            <Text color="cyan">{verb}</Text>
+            <Text color="yellow" bold>{verb}</Text>
             {message.preview ? <Text dimColor>{'  '}{message.preview}</Text> : null}
             {elapsedStr ? <Text dimColor>{'  · '}{elapsedStr}</Text> : null}
           </Box>
           {message.result && (
-            <Text dimColor>{'    └ '}{resultStr.trim()}</Text>
+            <Box marginTop={0} marginLeft={2} borderStyle="round" borderColor={borderColor} paddingX={1}>
+               <Text dimColor={!message.isError} color={resultColor}>{message.result.trim()}</Text>
+            </Box>
           )}
         </Box>
       );
@@ -85,34 +100,36 @@ export function MessageItem({ message }: Props): React.ReactElement {
 
     case 'memory_saved':
       return (
-        <Box marginLeft={2}>
-          <Text color="magenta">{'  ◆ '}</Text>
-          <Text dimColor>saved &quot;{message.topic}&quot;</Text>
+        <Box marginLeft={2} marginTop={1}>
+          <Text color="magenta">{'✦ '}</Text>
+          <Text dimColor>Saved to memory: </Text>
+          <Text color="magenta">&quot;{message.topic}&quot;</Text>
         </Box>
       );
 
     case 'error':
       return (
-        <Box marginLeft={2} marginTop={1}>
-          <Text color="red">{'  ✗  '}{message.message}</Text>
+        <Box marginLeft={2} marginTop={1} borderStyle="round" borderColor="red" paddingX={1}>
+          <Text color="red" bold>{'✗ Error: '}</Text>
+          <Text color="red">{message.message}</Text>
         </Box>
       );
 
     case 'command_output':
       return (
-        <Box flexDirection="column" marginLeft={2} marginTop={0} marginBottom={1}>
+        <Box flexDirection="column" marginLeft={2} marginTop={1} marginBottom={1} borderStyle="round" borderColor="dim" paddingX={1}>
           {message.text.split('\n').map((line, i) => (
-            <Text key={i} dimColor>{line ? `  ${line}` : ''}</Text>
+            <Text key={i} dimColor>{line}</Text>
           ))}
         </Box>
       );
 
     case 'thinking':
       return (
-        <Box flexDirection="column" marginLeft={2} marginTop={0} marginBottom={1}>
-          <Text dimColor color="yellow">{'  ◐ thought'}</Text>
-          {message.text.split('\n').slice(0, 10).map((line, i) => (
-            <Text key={i} dimColor>{`    ${line}`}</Text>
+        <Box flexDirection="column" marginLeft={2} marginTop={1} marginBottom={1} borderStyle="single" borderColor="dim" borderTop={false} borderBottom={false} borderRight={false} paddingLeft={1}>
+          <Text dimColor color="yellow" bold>{'◐ Thought Process'}</Text>
+          {message.text.split('\n').map((line, i) => (
+            <Text key={i} dimColor>{line}</Text>
           ))}
         </Box>
       );

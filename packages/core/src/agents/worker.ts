@@ -21,6 +21,8 @@ export interface WorkerConfig {
   type: TaskType;
   /** Max seconds before the worker is forcefully aborted. */
   timeoutMs?: number;
+  /** User's explicitly chosen provider — overrides per-type routing. */
+  preferredProvider?: 'claude' | 'gemini';
 }
 
 export interface WorkerResult {
@@ -102,24 +104,28 @@ export class WorkerAgent {
   }
 
   private async execute(instruction: string, systemPrompt: string, type: TaskType): Promise<string> {
-    // Research tasks → prefer Gemini (can use search grounding at call-site via streamSearch)
-    // Code tasks → always Claude (better code generation)
-    // Plan/general → prefer Gemini flash (fast, cheap)
-    const useGemini = this.gemini && (type === 'research' || type === 'plan' || type === 'general');
+    const pref = this.config.preferredProvider;
+
+    // Determine LLM: respect user's explicit choice, otherwise auto-route by task type
+    const useGemini = pref === 'gemini'
+      ? !!this.gemini                     // user chose gemini → use if available
+      : pref === 'claude'
+        ? false                            // user chose claude → never gemini
+        : !!(this.gemini && (type === 'research' || type === 'plan' || type === 'general'));
 
     if (useGemini && this.gemini) {
       let output = '';
       for await (const chunk of this.gemini.stream(
         [{ role: 'user', parts: [{ text: instruction }] }],
         systemPrompt,
-        type === 'plan' ? 'flash' : 'flash',
+        'flash',
       )) {
         if (chunk.type === 'text' && chunk.content) output += chunk.content;
       }
       return output.trim() || '[No output from Gemini worker]';
     }
 
-    // Claude path (code tasks and Gemini-unavailable fallback)
+    // Claude path
     let output = '';
     for await (const chunk of this.claude.stream(
       [{ role: 'user', content: instruction }],

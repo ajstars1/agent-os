@@ -413,9 +413,19 @@ export class AgentEngine {
 
     // ── Multi-agent orchestration ─────────────────────────────────────────────
     // Run classifier only for non-trivial messages (skip for <20 chars, commands, etc.)
+    // Determine if the user explicitly chose a model (vs auto-routing).
+    // When explicit, the orchestrator and all sub-agents must respect it.
+    const forceProvider = (parsedModel?.provider ?? input.forceModel) as LLMProvider | undefined;
+    const isExplicitChoice =
+      (forceProvider !== undefined && forceProvider !== 'auto') ||
+      this.config.DEFAULT_MODEL !== 'auto' ||
+      input.message.startsWith('cc:') ||
+      input.message.startsWith('g:');
+    const userModelChoice = isExplicitChoice ? provider as 'claude' | 'gemini' : undefined;
+
     let orchestratorHandled = false;
     if (cleanedMessage.length > 40 && !input.agentProfile) {
-      for await (const event of this._orchestrator.run(cleanedMessage, input.conversationId)) {
+      for await (const event of this._orchestrator.run(cleanedMessage, input.conversationId, userModelChoice)) {
         if (event.type === 'classified') {
           if (event.complexity === 'simple') {
             // Fall through to standard single-agent path
