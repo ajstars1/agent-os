@@ -1,4 +1,4 @@
-import type { StreamChunk } from '@agent-os/shared';
+import type { StreamChunk } from '@agent-os-core/shared';
 import type { GeminiMessage } from '../../llm/gemini.js';
 
 export class MockGeminiClient {

@@ -40,16 +40,26 @@ export interface ToolResult {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done';
+  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done' | 'thinking' | 'status' | 'permission_request' | 'error';
   content?: string;
   provider?: LLMProvider;
+  /** Resolved Gemini variant (e.g. 'gemini:flash-thinking') when auto-routing selects one. */
+  model?: string;
   toolCall?: ToolCall;
   toolResult?: ToolResult;
   usage?: {
     inputTokens: number;
     outputTokens: number;
   };
+  permissionRequest?: {
+    toolName: string;
+    input: Record<string, unknown>;
+    preview: string;
+  };
 }
+
+export type PermissionDecision = 'allow' | 'always' | 'deny';
+export type PermissionCallback = (toolName: string, input: Record<string, unknown>) => Promise<PermissionDecision>;
 
 export interface ToolDefinition {
   name: string;
@@ -58,7 +68,7 @@ export interface ToolDefinition {
 }
 
 export interface Config {
-  ANTHROPIC_API_KEY: string;
+  ANTHROPIC_API_KEY?: string;
   GOOGLE_API_KEY?: string;
   DISCORD_TOKEN?: string;
   DISCORD_CLIENT_ID?: string;
@@ -75,4 +85,6 @@ export interface Config {
   WEB_CORS_ORIGIN: string;
   AGENTS_DIR: string;
   ALLOWED_DIRS?: string;
+  NEURAL_ENGINE_URL: string;
+  CONFIG_UI_PORT: number;
 }

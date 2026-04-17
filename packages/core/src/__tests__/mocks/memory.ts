@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { IMemoryStore } from '../../memory/interface.js';
-import type { Message, Conversation, ChannelType } from '@agent-os/shared';
+import type { Message, Conversation, ChannelType } from '@agent-os-core/shared';
 
 export class InMemoryStore implements IMemoryStore {
   private readonly conversations = new Map<string, Conversation>();

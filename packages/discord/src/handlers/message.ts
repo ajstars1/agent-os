@@ -1,6 +1,6 @@
 import type { Message as DiscordMessage, TextChannel, DMChannel, NewsChannel } from 'discord.js';
-import type { AgentEngine } from '@agent-os/core';
-import type { Config, Logger } from '@agent-os/shared';
+import type { AgentEngine } from '@agent-os-core/core';
+import type { Config, Logger } from '@agent-os-core/shared';
 import { splitMessage, getConversationId } from '../utils.js';
 
 type SendableChannel = TextChannel | DMChannel | NewsChannel;

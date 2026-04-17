@@ -1,4 +1,4 @@
-import type { StreamChunk, ToolDefinition } from '@agent-os/shared';
+import type { StreamChunk, ToolDefinition } from '@agent-os-core/shared';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js';
 
 export class MockClaudeClient {

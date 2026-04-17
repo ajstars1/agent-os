@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import type { ToolDefinition, ToolResult, Logger } from '@agent-os/shared';
+import type { ToolDefinition, ToolResult, Logger } from '@agent-os-core/shared';
 
 export interface MCPServerConfig {
   command: string;
@@ -76,7 +76,7 @@ export class MCPClient {
     });
 
     proc.on('exit', (code) => {
-      this.logger.warn({ server: this.name, code }, 'MCP server process exited');
+      this.logger.debug({ server: this.name, code }, 'MCP server process exited');
       for (const [, handler] of this.pending) {
         handler.reject(new Error(`MCP server ${this.name} exited`));
       }

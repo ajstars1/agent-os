@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import type { Message, Conversation, ChannelType } from '@agent-os/shared';
+import type { Message, Conversation, ChannelType } from '@agent-os-core/shared';
 import type { IMemoryStore } from './interface.js';
 
 function expandPath(p: string): string {
@@ -169,6 +169,15 @@ export class SQLiteMemoryStore implements IMemoryStore {
       tokens: r.tokens ?? undefined,
       createdAt: r.created_at,
     }));
+  }
+
+  deleteMessagesByIds(ids: string[]): void {
+    if (ids.length === 0) return;
+    // Use a single DELETE … WHERE id IN (…) with one bound parameter per id.
+    const placeholders = ids.map(() => '?').join(', ');
+    this.db
+      .prepare(`DELETE FROM messages WHERE id IN (${placeholders})`)
+      .run(...ids);
   }
 
   clearConversation(conversationId: string): void {

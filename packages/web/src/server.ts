@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import type { AgentEngine, AgentLoader, SQLiteMemoryStore, TieredStore, ToolRegistry } from '@agent-os/core';
-import type { Config, Logger } from '@agent-os/shared';
+import type { AgentEngine, AgentLoader, SQLiteMemoryStore, TieredStore, ToolRegistry } from '@agent-os-core/core';
+import type { Config, Logger } from '@agent-os-core/shared';
 import { createCors } from './middleware/cors.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import { healthRoute } from './routes/health.js';

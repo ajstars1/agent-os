@@ -1,12 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js';
-import type { StreamChunk, ToolDefinition, ToolCall } from '@agent-os/shared';
+import type { StreamChunk, ToolDefinition, ToolCall } from '@agent-os-core/shared';
 
 export class ClaudeClient {
   private readonly client: Anthropic;
 
-  constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey });
+  constructor(apiKey?: string) {
+    this.client = new Anthropic(apiKey ? { apiKey } : {});
   }
 
   async *stream(

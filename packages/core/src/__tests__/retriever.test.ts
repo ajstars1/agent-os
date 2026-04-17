@@ -46,72 +46,72 @@ describe('HAMRetriever.retrieve', () => {
     retriever = new HAMRetriever(store);
   });
 
-  it('always includes L0 headlines in activeMemory', () => {
-    const result = retriever.retrieve('hello', [], 'conv-1');
+  it('always includes L0 headlines in activeMemory', async () => {
+    const result = await retriever.retrieve('hello', [], 'conv-1');
     expect(result.activeMemory).toContain('Knowledge Index');
     expect(result.activeMemory).toContain('pricing');
     expect(result.activeMemory).toContain('memory');
     expect(result.activeMemory).toContain('integrations');
   });
 
-  it('detects GENERAL state for vague message', () => {
-    const result = retriever.retrieve('hello there', [], 'conv-2');
+  it('detects GENERAL state for vague message', async () => {
+    const result = await retriever.retrieve('hello there', [], 'conv-2');
     expect(result.state).toBe('GENERAL');
   });
 
-  it('detects CTA state and returns result', () => {
-    const result = retriever.retrieve('what is the pricing?', [], 'conv-3');
+  it('detects CTA state and returns result', async () => {
+    const result = await retriever.retrieve('what is the pricing?', [], 'conv-3');
     expect(result.state).toBe('CTA');
   });
 
-  it('detects DEEP_DIVE state', () => {
-    const result = retriever.retrieve('explain how the memory works in detail', [], 'conv-4');
+  it('detects DEEP_DIVE state', async () => {
+    const result = await retriever.retrieve('explain how the memory works in detail', [], 'conv-4');
     expect(result.state).toBe('DEEP_DIVE');
   });
 
-  it('matches topic by keyword in message', () => {
-    const result = retriever.retrieve('tell me about pricing', [], 'conv-5');
+  it('matches topic by keyword in message', async () => {
+    const result = await retriever.retrieve('tell me about pricing', [], 'conv-5');
     expect(result.expandedTopics).toContain('pricing');
   });
 
-  it('matches topic by tag in message', () => {
-    const result = retriever.retrieve('how does the HAM algorithm work?', [], 'conv-6');
+  it('matches topic by tag in message', async () => {
+    const result = await retriever.retrieve('how does the HAM algorithm work?', [], 'conv-6');
     expect(result.expandedTopics).toContain('memory');
   });
 
-  it('includes active topic expansion at correct depth for PROBLEM', () => {
-    const result = retriever.retrieve('I have a problem with memory usage', [], 'conv-7');
+  it('includes active topic expansion at correct depth for PROBLEM', async () => {
+    const result = await retriever.retrieve('I have a problem with memory usage', [], 'conv-7');
     // State → PROBLEM → L2 depth
     expect(result.state).toBe('PROBLEM');
     expect(result.activeMemory).toContain('Active Topic');
     expect(result.activeMemory).toContain('memory');
   });
 
-  it('tokenCount is positive and within reasonable range', () => {
-    const result = retriever.retrieve('tell me more about the discord integration', [], 'conv-8');
+  it('tokenCount is positive and within reasonable range', async () => {
+    const result = await retriever.retrieve('tell me more about the discord integration', [], 'conv-8');
     expect(result.tokenCount).toBeGreaterThan(0);
     expect(result.tokenCount).toBeLessThanOrEqual(400);
   });
 
-  it('state persists across calls for same conversationId', () => {
-    retriever.retrieve('what is this?', [], 'conv-9');          // INTRO
-    const r2 = retriever.retrieve('tell me more', [], 'conv-9'); // DEEP_DIVE
+  it('state persists across calls for same conversationId', async () => {
+    await retriever.retrieve('what is this?', [], 'conv-9');          // INTRO
+    const r2 = await retriever.retrieve('tell me more', [], 'conv-9'); // DEEP_DIVE
     expect(r2.state).toBe('DEEP_DIVE');
   });
 
-  it('different conversationIds have independent state', () => {
-    retriever.retrieve('what is the price?', [], 'conv-A'); // CTA
-    const r2 = retriever.retrieve('hello', [], 'conv-B');   // GENERAL (fresh)
+  it('different conversationIds have independent state', async () => {
+    await retriever.retrieve('what is the price?', [], 'conv-A'); // CTA
+    const r2 = await retriever.retrieve('hello', [], 'conv-B');   // GENERAL (fresh)
     expect(r2.state).toBe('GENERAL');
   });
 
-  it('usedChunkIds populated when topic matched', () => {
-    const result = retriever.retrieve('tell me about discord integrations', [], 'conv-10');
+  it('usedChunkIds populated when topic matched', async () => {
+    const result = await retriever.retrieve('tell me about discord integrations', [], 'conv-10');
     expect(result.usedChunkIds.length).toBeGreaterThan(0);
   });
 
-  it('usedChunkIds empty when no topic matched', () => {
-    const result = retriever.retrieve('hello', [], 'conv-11');
+  it('usedChunkIds empty when no topic matched', async () => {
+    const result = await retriever.retrieve('hello', [], 'conv-11');
     expect(result.usedChunkIds).toHaveLength(0);
   });
 });
