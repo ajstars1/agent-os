@@ -398,7 +398,7 @@ export const commands: Record<
         lines.push(`⚠ install warnings — ${msg}`);
       }
       try {
-        execSync('npm run build', { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
+        execSync(hasBun ? 'bun run build' : 'npm run build', { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
         lines.push('✓ build complete');
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
