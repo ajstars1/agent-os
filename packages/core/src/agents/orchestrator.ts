@@ -20,6 +20,7 @@ import type { ClaudeClient } from '../llm/claude.js';
 import type { GeminiClient, GeminiVariant } from '../llm/gemini.js';
 import type { EpisodicStore } from '../memory/episodic-store.js';
 import type { Logger } from '@agent-os-core/shared';
+import type { ToolRegistry } from '../tools/registry.js';
 import { WorkerAgent } from './worker.js';
 import type { WorkerResult } from './worker.js';
 import type { TaskType } from './task-queue.js';
@@ -101,6 +102,7 @@ export class Orchestrator {
     private readonly gemini: GeminiClient | null,
     private readonly episodicStore: EpisodicStore | undefined,
     private readonly logger: Logger,
+    private readonly tools: ToolRegistry,
   ) {}
 
   /**
@@ -192,10 +194,10 @@ export class Orchestrator {
         const agent = new ResearchAgent(this.gemini, this.logger);
         output = await agent.run(task.instruction);
       } else if (task.type === 'code') {
-        const agent = new CodeAgent(this.claude, this.logger);
+        const agent = new CodeAgent(this.claude, this.tools, this.logger);
         output = await agent.run(task.instruction);
       } else if (task.type === 'plan') {
-        const agent = new PlannerAgent(this.gemini, this.claude, this.logger);
+        const agent = new PlannerAgent(this.gemini, this.claude, this.tools, this.logger);
         output = await agent.run(task.instruction);
       } else {
         // General or fallback — generic worker

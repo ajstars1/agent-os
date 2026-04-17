@@ -176,6 +176,13 @@ export class SkillLoader {
     if (watchPaths.length === 0) return;
 
     this.watcher = watch(watchPaths, {
+      ignored: [
+        '**/.git/**',
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/build/**',
+        '**/__pycache__/**',
+      ],
       ignoreInitial: true,
       persistent: true,
       awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },

@@ -4,11 +4,13 @@ import { homedir } from 'node:os';
 import { join, dirname, normalize, resolve as resolvePath, relative } from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import * as diff from 'diff';
 import { z } from 'zod';
 import type { ToolResult, Logger, PermissionCallback } from '@agent-os-core/shared';
 import type { ToolRegistry } from './registry.js';
 import type { TieredStore } from '../memory/tiered-store.js';
 import type { HAMCompressor } from '../memory/compressor.js';
+import { stripTrailingWhitespace, findActualString, preserveQuoteStyle, applyEditToFile } from './editutils.js';
 
 const execAsync = promisify(exec);
 
@@ -23,10 +25,45 @@ function expandPath(p: string): string {
   return p.startsWith('~') ? p.replace('~', homedir()) : p;
 }
 
-function isPathAllowed(resolved: string, allowedDirs: string[]): boolean {
-  return allowedDirs.some((dir) => {
-    const normalized = normalize(expandPath(dir));
-    return resolved.startsWith(normalized + '/') || resolved === normalized;
+function globPatternToRegex(pattern: string): RegExp {
+  let regexStr = '';
+  let i = 0;
+  while (i < pattern.length) {
+    if (pattern[i] === '*' && pattern[i + 1] === '*') {
+      // ** matches any path including slashes
+      regexStr += '.*';
+      i += 2;
+      // skip optional trailing slash
+      if (pattern[i] === '/') i++;
+    } else if (pattern[i] === '*') {
+      // * matches within segment only
+      regexStr += '[^/]*';
+      i++;
+    } else if (pattern[i] === '?') {
+      regexStr += '[^/]';
+      i++;
+    } else if ('.+^${}()|[]\\'.includes(pattern[i] as string)) {
+      regexStr += '\\' + pattern[i];
+      i++;
+    } else {
+      regexStr += pattern[i];
+      i++;
+    }
+  }
+  return new RegExp('^' + regexStr + '$');
+}
+
+function isPathAllowed(resolved: string, allowedRules: string[]): boolean {
+  return allowedRules.some((rule) => {
+    // Exact path prefix check (backward compatibility)
+    if (!rule.includes('*') && !rule.includes('?')) {
+      const normalized = normalize(expandPath(rule));
+      return resolved.startsWith(normalized + '/') || resolved === normalized;
+    }
+    // Glob pattern check
+    const regex = globPatternToRegex(rule);
+    const rel = relative(process.cwd(), resolved);
+    return regex.test(resolved) || regex.test(rel);
   });
 }
 
@@ -121,6 +158,8 @@ async function handleBash(
 
 const ReadFileSchema = z.object({
   path: z.string().min(1),
+  offset: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(3000).optional(),
   maxBytes: z.number().int().max(512_000).default(MAX_FILE_BYTES),
 });
 
@@ -133,7 +172,7 @@ async function handleReadFile(
   if (!parsed.success) {
     return { toolCallId: '', content: parsed.error.toString(), isError: true };
   }
-  const { path: filePath, maxBytes } = parsed.data;
+  const { path: filePath, offset, limit, maxBytes } = parsed.data;
   const resolved = resolvePath(expandPath(filePath));
 
   if (allowedDirs.length > 0 && !isPathAllowed(resolved, allowedDirs)) {
@@ -142,9 +181,25 @@ async function handleReadFile(
 
   try {
     const content = await readFile(resolved, 'utf-8');
-    const truncated = content.slice(0, maxBytes);
-    logger.debug({ path: resolved, length: truncated.length }, 'read_file complete');
-    return { toolCallId: '', content: truncated, isError: false };
+    const lines = content.split('\n');
+    let startIdx = offset ? offset - 1 : 0;
+    let endIdx = limit ? startIdx + limit : lines.length;
+    
+    // Bounds check
+    startIdx = Math.max(0, Math.min(startIdx, lines.length - 1));
+    endIdx = Math.max(startIdx, Math.min(endIdx, lines.length));
+    
+    const slice = lines.slice(startIdx, endIdx);
+    
+    // Format with line numbers (1-indexed)
+    let formatted = slice.map((line, idx) => `${startIdx + idx + 1} | ${line}`).join('\n');
+    
+    if (formatted.length > maxBytes) {
+      formatted = formatted.slice(0, maxBytes) + '\n... (truncated due to maxBytes)';
+    }
+
+    logger.debug({ path: resolved, lines: slice.length }, 'read_file complete');
+    return { toolCallId: '', content: formatted, isError: false };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { toolCallId: '', content: msg, isError: true };
@@ -193,33 +248,7 @@ const GlobSchema = z.object({
   limit: z.number().int().min(1).max(2000).default(200),
 });
 
-function globPatternToRegex(pattern: string): RegExp {
-  let regexStr = '';
-  let i = 0;
-  while (i < pattern.length) {
-    if (pattern[i] === '*' && pattern[i + 1] === '*') {
-      // ** matches any path including slashes
-      regexStr += '.*';
-      i += 2;
-      // skip optional trailing slash
-      if (pattern[i] === '/') i++;
-    } else if (pattern[i] === '*') {
-      // * matches within segment only
-      regexStr += '[^/]*';
-      i++;
-    } else if (pattern[i] === '?') {
-      regexStr += '[^/]';
-      i++;
-    } else if ('.+^${}()|[]\\'.includes(pattern[i] as string)) {
-      regexStr += '\\' + pattern[i];
-      i++;
-    } else {
-      regexStr += pattern[i];
-      i++;
-    }
-  }
-  return new RegExp('^' + regexStr + '$');
-}
+
 
 interface StatEntry {
   path: string;
@@ -428,7 +457,7 @@ async function handleEdit(
   if (!parsed.success) {
     return { toolCallId: '', content: parsed.error.toString(), isError: true };
   }
-  const { file_path, old_string, new_string, replace_all } = parsed.data;
+  let { file_path, old_string, new_string, replace_all } = parsed.data;
   const resolved = resolvePath(expandPath(file_path));
 
   if (allowedDirs.length > 0 && !isPathAllowed(resolved, allowedDirs)) {
@@ -443,31 +472,44 @@ async function handleEdit(
     return { toolCallId: '', content: msg, isError: true };
   }
 
-  // Count occurrences
+  // Pre-process old and new strings via Claude Code logic
+  old_string = stripTrailingWhitespace(old_string);
+  new_string = stripTrailingWhitespace(new_string);
+
+  const actualOldString = findActualString(content, old_string);
+  
+  if (!actualOldString) {
+    return { toolCallId: '', content: `old_string not found in ${resolved}. Ensure you are submitting the exact code block currently present in the file.`, isError: true };
+  }
+
+  // Normalize quotes just in case the LLM used straight quotes but the file has curly quotes
+  new_string = preserveQuoteStyle(old_string, actualOldString, new_string);
+
+  // Re-check count on the *actual* old string safely
   let count = 0;
-  let idx = content.indexOf(old_string);
+  let idx = content.indexOf(actualOldString);
   while (idx !== -1) {
     count++;
-    idx = content.indexOf(old_string, idx + 1);
+    idx = content.indexOf(actualOldString, idx + 1);
   }
 
   if (count === 0) {
-    return { toolCallId: '', content: `old_string not found in ${resolved}`, isError: true };
+    return { toolCallId: '', content: `old_string not found in ${resolved} (after normalization)`, isError: true };
   }
 
   if (!replace_all && count > 1) {
     return {
       toolCallId: '',
-      content: `old_string appears ${count} times in ${resolved} — use replace_all: true or provide more context`,
+      content: `old_string appears ${count} times in ${resolved} — use replace_all: true or provide more context lines to make it unique`,
       isError: true,
     };
   }
 
-  let updated: string;
-  if (replace_all) {
-    updated = content.split(old_string).join(new_string);
-  } else {
-    updated = content.replace(old_string, new_string);
+  // Apply edit using actual found string
+  const updated = applyEditToFile(content, actualOldString, new_string, replace_all);
+
+  if (content === updated) {
+    return { toolCallId: '', content: `Edit applied but the file content did not change.`, isError: true };
   }
 
   try {
@@ -592,15 +634,35 @@ async function handleRemember(
 // ─── Diff preview helper ──────────────────────────────────────────────────────
 
 function buildEditPreview(filePath: string, oldString: string, newString: string): string {
-  const lines: string[] = [`Edit: ${filePath}`, ''];
-  const removed = oldString.split('\n').slice(0, 6);
-  const added = newString.split('\n').slice(0, 6);
-  for (const line of removed) lines.push(`- ${line}`);
-  for (const line of added) lines.push(`+ ${line}`);
-  if (oldString.split('\n').length > 6 || newString.split('\n').length > 6) {
-    lines.push('  … (truncated)');
+  try {
+    const patch = diff.createTwoFilesPatch(
+      filePath,
+      filePath,
+      oldString,
+      newString,
+      'Original',
+      'Proposed',
+      { context: 3 }
+    );
+    // Remove "No newline at end of file" warnings and redundant header boilerplate
+    let lines = patch.split('\n').filter(l => !l.startsWith('\\ No newline'));
+    // Optionally clean up the top two lines if they are just the file names we already know
+    if (lines[0]?.startsWith('Index:') || lines[0]?.startsWith('===')) {
+      lines = lines.slice(2);
+    }
+    return lines.join('\n');
+  } catch (e) {
+    // Fallback if diff fails
+    const lines: string[] = [`Edit: ${filePath}`, ''];
+    const removed = oldString.split('\n').slice(0, 6);
+    const added = newString.split('\n').slice(0, 6);
+    for (const line of removed) lines.push(`- ${line}`);
+    for (const line of added) lines.push(`+ ${line}`);
+    if (oldString.split('\n').length > 6 || newString.split('\n').length > 6) {
+      lines.push('  … (truncated)');
+    }
+    return lines.join('\n');
   }
-  return lines.join('\n');
 }
 
 // ─── Session-level permission state ──────────────────────────────────────────
@@ -686,11 +748,13 @@ export function registerBuiltinTools(
   registry.register(
     {
       name: 'read_file',
-      description: 'Read a file from the local filesystem. Returns UTF-8 text content.',
+      description: 'Read a file from the local filesystem. Returns UTF-8 text content prefixed with line numbers. Use offset and limit to read chunks of large files.',
       inputSchema: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Absolute or ~ path to the file' },
+          offset: { type: 'number', description: 'Line number to start reading from (1-indexed)' },
+          limit: { type: 'number', description: 'Maximum number of lines to read (up to 3000)' },
           maxBytes: { type: 'number', description: 'Max bytes to read (default 65536)', default: 65536 },
         },
         required: ['path'],

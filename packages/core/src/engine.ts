@@ -26,6 +26,7 @@ import type { ProfileExtractor } from './memory/profile-extractor.js';
 import { buildContext } from './memory/context-builder.js';
 import { Orchestrator } from './agents/orchestrator.js';
 import type { FeedbackStore } from './memory/feedback-store.js';
+import { ToolExecutor } from './agents/tool-executor.js';
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -104,6 +105,7 @@ export class AgentEngine {
    */
   private readonly _semanticGraph: SemanticGraph;
   private readonly _orchestrator: Orchestrator;
+  private readonly _toolExecutor?: ToolExecutor;
 
   constructor(
     private readonly config: Config,
@@ -125,7 +127,10 @@ export class AgentEngine {
     private readonly learnerTopics: string[] = [],
     private readonly feedbackStore?: FeedbackStore,
   ) {
-    this._orchestrator = new Orchestrator(claude, gemini, episodicStore, logger);
+    this._orchestrator = new Orchestrator(claude, gemini, episodicStore, logger, tools);
+    if (claude) {
+      this._toolExecutor = new ToolExecutor(claude, tools, logger);
+    }
 
     this._semanticGraph = semanticGraph ?? new SemanticGraph({
       llm: {
@@ -488,8 +493,32 @@ export class AgentEngine {
     }
 
     if (!orchestratorHandled) {
-      if (provider === 'claude') {
-        yield* collectChunks(this.claudeLoop(input.conversationId, history, systemPrompt, toolDefs, cleanedMessage));
+      if (provider === 'claude' && this._toolExecutor) {
+        const messages: MessageParam[] = history
+          .slice(0, -1) // exclude last user message
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+          }));
+        messages.push({ role: 'user', content: cleanedMessage });
+        
+        yield* collectChunks(
+          this._toolExecutor.runLoop(
+            systemPrompt,
+            messages,
+            toolDefs,
+            (text, tokens) => {
+              this.memory.addMessage(input.conversationId, {
+                conversationId: input.conversationId,
+                role: 'assistant',
+                content: text,
+                model: 'claude',
+                tokens,
+              });
+            }
+          )
+        );
       } else {
         yield* collectChunks(this.geminiStream(input.conversationId, history, systemPrompt, cleanedMessage, geminiVariant, input.useSearch));
       }
@@ -546,116 +575,7 @@ export class AgentEngine {
       .slice(0, 6);
   }
 
-  private async *claudeLoop(
-    conversationId: string,
-    history: ReturnType<IMemoryStore['getMessages']>,
-    systemPrompt: string,
-    toolDefs: ReturnType<ToolRegistry['getTools']>,
-    lastUserMessage: string,
-  ): AsyncGenerator<StreamChunk> {
-    if (!this.claude) {
-      yield { type: 'error', content: 'Claude is not configured. Set ANTHROPIC_API_KEY in ~/.agent-os/.env' };
-      return;
-    }
-    const messages: MessageParam[] = history
-      .slice(0, -1) // exclude last user message (already in history), we'll add it
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      }));
 
-    // Add the current user message
-    messages.push({ role: 'user', content: lastUserMessage });
-
-    let iteration = 0;
-    let fullAssistantText = '';
-    let lastUsage = { inputTokens: 0, outputTokens: 0 };
-
-    while (iteration < MAX_TOOL_ITERATIONS) {
-      const pendingToolCalls: ToolCall[] = [];
-      let iterText = '';
-
-      for await (const chunk of this.claude.stream(messages, systemPrompt, toolDefs)) {
-        if (chunk.type === 'text' && chunk.content) {
-          iterText += chunk.content;
-          yield chunk;
-        } else if (chunk.type === 'tool_call' && chunk.toolCall) {
-          pendingToolCalls.push(chunk.toolCall);
-          yield chunk;
-        } else if (chunk.type === 'usage' && chunk.usage) {
-          lastUsage = chunk.usage;
-          yield chunk;
-        } else if (chunk.type === 'done') {
-          break;
-        }
-      }
-
-      fullAssistantText += iterText;
-
-      if (pendingToolCalls.length === 0) {
-        // No tool calls — we're done
-        break;
-      }
-
-      // Execute tool calls
-      const toolResults: ToolResult[] = [];
-      for (const toolCall of pendingToolCalls) {
-        this.logger.debug({ tool: toolCall.name }, 'Calling tool');
-        const result = await this.tools.callTool(toolCall.name, toolCall.input);
-        result.toolCallId = toolCall.id;
-        toolResults.push(result);
-        yield { type: 'tool_result', toolResult: result };
-      }
-
-      // Build Claude tool use + tool result messages
-      const assistantContent: MessageParam['content'] = [];
-      if (iterText) {
-        assistantContent.push({ type: 'text', text: iterText });
-      }
-      for (const tc of pendingToolCalls) {
-        assistantContent.push({
-          type: 'tool_use',
-          id: tc.id,
-          name: tc.name,
-          input: tc.input,
-        });
-      }
-      messages.push({ role: 'assistant', content: assistantContent });
-
-      const toolResultContent: Array<{
-        type: 'tool_result';
-        tool_use_id: string;
-        content: string;
-        is_error?: boolean;
-      }> = toolResults.map((r) => ({
-        type: 'tool_result' as const,
-        tool_use_id: r.toolCallId,
-        content: r.content,
-        ...(r.isError ? { is_error: true } : {}),
-      }));
-      messages.push({ role: 'user', content: toolResultContent });
-
-      iteration++;
-    }
-
-    if (iteration >= MAX_TOOL_ITERATIONS) {
-      this.logger.warn({ conversationId }, 'Hit max tool iterations');
-    }
-
-    // Persist assistant message
-    if (fullAssistantText) {
-      this.memory.addMessage(conversationId, {
-        conversationId,
-        role: 'assistant',
-        content: fullAssistantText,
-        model: 'claude',
-        tokens: lastUsage.inputTokens + lastUsage.outputTokens,
-      });
-    }
-
-    yield { type: 'done' };
-  }
 
   private async *geminiStream(
     conversationId: string,

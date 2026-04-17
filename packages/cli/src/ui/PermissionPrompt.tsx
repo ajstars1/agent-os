@@ -64,13 +64,14 @@ export function PermissionPrompt({ toolName, preview, onDecision }: Props): Reac
       <Box flexDirection="column" marginLeft={2} marginBottom={1}
         borderStyle="single" borderColor="gray" paddingX={1}>
         {preview.split('\n').map((line, i) => {
-          const isRemoved = line.startsWith('- ');
-          const isAdded = line.startsWith('+ ');
+          const isRemoved = line.startsWith('-') && !line.startsWith('---');
+          const isAdded = line.startsWith('+') && !line.startsWith('+++');
+          const isHunk = line.startsWith('@@');
           return (
             <Text
               key={i}
-              color={isRemoved ? 'red' : isAdded ? 'green' : undefined}
-              dimColor={!isRemoved && !isAdded}
+              color={isRemoved ? 'red' : isAdded ? 'green' : isHunk ? 'cyan' : undefined}
+              dimColor={!isRemoved && !isAdded && !isHunk}
             >
               {line}
             </Text>
