@@ -7,14 +7,14 @@ import type {
   ChannelType,
   Conversation,
   Config,
-} from '@agent-os/shared';
+} from '@agent-os-core/shared';
 import type { IMemoryStore } from './memory/interface.js';
 import type { SkillLoader } from './skills/loader.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { ClaudeClient } from './llm/claude.js';
 import type { GeminiClient, GeminiMessage, GeminiVariant } from './llm/gemini.js';
 import type { LLMRouter } from './llm/router.js';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 import type { AgentProfile } from './agents/types.js';
 import type { HAMRetriever } from './memory/retriever.js';
 import type { TieredStore } from './memory/tiered-store.js';
@@ -25,6 +25,7 @@ import type { UserProfileStore } from './memory/user-profile-store.js';
 import type { ProfileExtractor } from './memory/profile-extractor.js';
 import { buildContext } from './memory/context-builder.js';
 import { Orchestrator } from './agents/orchestrator.js';
+import type { FeedbackStore } from './memory/feedback-store.js';
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -109,7 +110,7 @@ export class AgentEngine {
     private readonly memory: IMemoryStore,
     private readonly skills: SkillLoader,
     private readonly tools: ToolRegistry,
-    private readonly claude: ClaudeClient,
+    private readonly claude: ClaudeClient | null,
     private readonly gemini: GeminiClient | null,
     private readonly router: LLMRouter,
     private readonly logger: Logger,
@@ -122,19 +123,27 @@ export class AgentEngine {
     private readonly profileExtractor?: ProfileExtractor,
     /** Pre-loaded hot topics from the background learner (boosts episode retrieval). */
     private readonly learnerTopics: string[] = [],
+    private readonly feedbackStore?: FeedbackStore,
   ) {
     this._orchestrator = new Orchestrator(claude, gemini, episodicStore, logger);
 
     this._semanticGraph = semanticGraph ?? new SemanticGraph({
       llm: {
         complete: async (systemPrompt: string, userPrompt: string) => {
-          const provider = await router.route(userPrompt);
+          // Respect the configured default model so internal calls (SemanticGraph,
+          // sleep-cycle) don't silently fall back to Claude when the user is in
+          // Gemini mode.  Only route dynamically when the default is 'auto'.
+          const useGemini =
+            gemini !== null &&
+            (config.DEFAULT_MODEL === 'gemini' ||
+              (config.DEFAULT_MODEL === 'auto' && (await router.route(userPrompt)) === 'gemini'));
+
           let text = '';
-          if (provider === 'gemini' && gemini) {
+          if (useGemini && gemini) {
             for await (const chunk of gemini.stream([{ role: 'user', parts: [{ text: userPrompt }] }], systemPrompt)) {
               if (chunk.type === 'text' && chunk.content) text += chunk.content;
             }
-          } else {
+          } else if (claude) {
             for await (const chunk of claude.stream([{ role: 'user', content: userPrompt }], systemPrompt)) {
               if (chunk.type === 'text' && chunk.content) text += chunk.content;
             }
@@ -242,6 +251,15 @@ export class AgentEngine {
       // Build ordered log strings: "[role] content"
       const logs = messages.map((m) => `[${m.role}] ${m.content}`);
 
+      // Append pending user feedback to logs for consolidation awareness
+      if (this.feedbackStore) {
+        const feedbackCtx = this.feedbackStore.buildFeedbackContext();
+        if (feedbackCtx) {
+          logs.push(`[system] ${feedbackCtx}`);
+          this.logger.info('[SleepCycle] Injected user feedback into consolidation context');
+        }
+      }
+
       // ── Step 2: Call the PyTorch /trigger_sleep endpoint ───────────────────
       let sleepResponse: {
         indices_to_delete: number[];
@@ -315,7 +333,16 @@ export class AgentEngine {
         }
       }
 
-      // ── Step 5: Done ───────────────────────────────────────────────────────
+      // ── Step 5: Mark feedback as applied ─────────────────────────────────
+      if (this.feedbackStore) {
+        const pending = this.feedbackStore.getPending(20);
+        if (pending.length > 0) {
+          this.feedbackStore.markApplied(pending.map((e) => e.id));
+          this.logger.info({ count: pending.length }, '[SleepCycle] Marked feedback as applied');
+        }
+      }
+
+      // ── Step 6: Done ───────────────────────────────────────────────────────
       console.log('Sleep cycle complete. Memory pruned and facts consolidated.');
     } finally {
       this._sleepRunning = false;
@@ -431,16 +458,16 @@ export class AgentEngine {
             // Fall through to standard single-agent path
             break;
           }
-          // Complex — stream orchestration status
-          yield { type: 'text', content: `\n_Routing to specialist agents..._\n\n` };
+          // Complex — stream orchestration status via dedicated status chunks
+          yield { type: 'status', content: 'Routing to specialist agents...' };
         } else if (event.type === 'decomposed') {
-          yield { type: 'text', content: `_Spawning ${event.taskCount} workers..._\n\n` };
+          yield { type: 'status', content: `Spawning ${event.taskCount} workers...` };
         } else if (event.type === 'worker_start') {
-          yield { type: 'text', content: `_[${event.workerType}] running..._\n` };
+          yield { type: 'status', content: `[${event.workerType}] running...` };
         } else if (event.type === 'worker_done') {
-          yield { type: 'text', content: `_[${event.workerType}] done_\n` };
+          yield { type: 'status', content: `[${event.workerType}] done` };
         } else if (event.type === 'reducing') {
-          yield { type: 'text', content: `\n_Synthesizing results..._\n\n` };
+          yield { type: 'status', content: 'Synthesizing results...' };
         } else if (event.type === 'done') {
           if (event.result && event.result.length > 0) {
             // Persist synthesized result to conversation history
@@ -451,7 +478,7 @@ export class AgentEngine {
               content: fullResponse,
               model: 'orchestrator',
             });
-            yield { type: 'text', content: `\n---\n\n${event.result}` };
+            yield { type: 'text', content: event.result };
             yield { type: 'done' };
             orchestratorHandled = true;
           }
@@ -526,6 +553,10 @@ export class AgentEngine {
     toolDefs: ReturnType<ToolRegistry['getTools']>,
     lastUserMessage: string,
   ): AsyncGenerator<StreamChunk> {
+    if (!this.claude) {
+      yield { type: 'error', content: 'Claude is not configured. Set ANTHROPIC_API_KEY in ~/.agent-os/.env' };
+      return;
+    }
     const messages: MessageParam[] = history
       .slice(0, -1) // exclude last user message (already in history), we'll add it
       .filter((m) => m.role === 'user' || m.role === 'assistant')

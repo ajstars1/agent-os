@@ -1,8 +1,41 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { resolve, isAbsolute, join } from 'node:path';
+import { resolve, isAbsolute, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor, AgentLoader } from '@agent-os/core';
-import type { Message } from '@agent-os/shared';
+import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor, AgentLoader, FeedbackStore } from '@agent-os-core/core';
+import type { Message } from '@agent-os-core/shared';
+import { startConfigServer } from '../config-server.js';
+
+/**
+ * Walk up from the compiled CLI's location to find the monorepo root.
+ * Returns the path if the running CLI is inside an `agent-os` dev checkout
+ * (has root package.json with name "agent-os" and a `packages/` directory).
+ * Returns null when running from a published tarball / installed package.
+ */
+function findDevMonorepoRoot(): string | null {
+  try {
+    const here = fileURLToPath(import.meta.url);
+    let dir = dirname(here);
+    for (let i = 0; i < 8; i++) {
+      const pkgPath = join(dir, 'package.json');
+      if (existsSync(pkgPath) && existsSync(join(dir, 'packages'))) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { name?: string };
+          if (pkg.name === 'agent-os') return dir;
+        } catch { /* keep walking */ }
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // fileURLToPath / import.meta.url unavailable
+  }
+  return null;
+}
+
+let _activeConfigServer: { url: string; close: () => void } | null = null;
 
 export interface CommandContext {
   engine: AgentEngine;
@@ -12,6 +45,9 @@ export interface CommandContext {
   hamStore?: TieredStore;
   hamCompressor?: HAMCompressor | null;
   agents?: AgentLoader;
+  feedbackStore?: FeedbackStore;
+  /** Last assistant response — used as context when saving feedback */
+  lastAssistantMessage?: string;
 }
 
 const ENV_PATH = join(homedir(), '.agent-os', '.env');
@@ -23,15 +59,19 @@ const HELP_TEXT = `Available commands:
   /config                         Show all config keys and values
   /config set <KEY> <value>       Update a config key in ~/.agent-os/.env
   /config path                    Show config file path
+  /config web                     Launch config web UI (localhost)
   /skills                         List loaded skills
   /memory list                    Show all memory topics
   /memory stats                   Show memory access patterns
   /memory add <topic> <content>   Store knowledge
+  /feedback <text>                Save feedback to improve future responses
+  /feedback list                  Show saved feedback entries
   /export [filename]              Export conversation to markdown
   /cd <path>                      Change working directory
   /cwd                            Print current working directory
   /dream                          Run memory consolidation cycle
   /agents                         List agent profiles
+  /update                         Pull latest code and rebuild
   /exit                           Exit agent-os`;
 
 const SECRET_KEYS = new Set(['ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'DISCORD_TOKEN']);
@@ -98,9 +138,33 @@ export const commands: Record<
     return `Model set to: ${labels[model] ?? model}`;
   },
 
-  config: (args) => {
+  config: async (args) => {
     const parts = args.trim().split(/\s+/);
     const sub = parts[0] ?? '';
+
+    if (sub === 'web') {
+      const action = parts[1] ?? '';
+
+      if (action === 'stop') {
+        if (_activeConfigServer) {
+          _activeConfigServer.close();
+          _activeConfigServer = null;
+          return 'Config UI stopped.';
+        }
+        return 'Config UI is not running.';
+      }
+
+      if (_activeConfigServer) {
+        return `Config UI already running at ${_activeConfigServer.url}`;
+      }
+      try {
+        const port = parseInt(process.env['CONFIG_UI_PORT'] ?? '7877', 10);
+        _activeConfigServer = await startConfigServer(port);
+        return `Config UI started at ${_activeConfigServer.url}\nOpen in browser — changes sync to terminal in real-time.\nRun /config web stop to shut it down.`;
+      } catch (err: unknown) {
+        return `Failed to start config server: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
 
     if (sub === 'path') {
       return `Config file: ${ENV_PATH}`;
@@ -254,6 +318,105 @@ export const commands: Record<
       return `  • ${p.name}${desc}`;
     });
     return `Agent profiles (${profiles.length}):\n${lines.join('\n')}`;
+  },
+
+  feedback: (args, ctx) => {
+    const sub = args.trim();
+
+    if (sub === 'list') {
+      if (!ctx.feedbackStore) return 'Feedback store not available.';
+      const entries = ctx.feedbackStore.getAll(20);
+      if (entries.length === 0) return 'No feedback saved yet. Use /feedback <text> to add.';
+      const lines = entries.flatMap((e) => {
+        const date = new Date(e.timestamp).toLocaleString();
+        const status = e.applied ? '✓' : '○';
+        const row = [`  ${status} [${date}] ${e.text}`];
+        const lastUser = [...e.history].reverse().find((t) => t.role === 'user');
+        if (lastUser) {
+          const preview = lastUser.content.replace(/\s+/g, ' ').trim().slice(0, 80);
+          row.push(`      ↪ user: "${preview}${lastUser.content.length > 80 ? '…' : ''}"`);
+        }
+        return row;
+      });
+      return `Feedback (${entries.length} entries, ✓=applied ○=pending):\n${lines.join('\n')}`;
+    }
+
+    if (!sub) return 'Usage: /feedback <text>\n       /feedback list';
+    if (!ctx.feedbackStore) return 'Feedback store not available.';
+
+    const context = ctx.lastAssistantMessage
+      ? ctx.lastAssistantMessage.slice(0, 120)
+      : '';
+
+    const recent = ctx.engine.getMessages(ctx.conversationId, 6);
+    const history = recent.map((m) => ({
+      role: m.role,
+      content: m.content,
+      createdAt: m.createdAt,
+    }));
+
+    ctx.feedbackStore.add(sub, context, history);
+    const turnNote = history.length > 0 ? ` (captured last ${history.length} turns)` : '';
+    return `Feedback saved${turnNote}. It will be applied during the next sleep cycle.`;
+  },
+
+  update: () => {
+    // Resolution order:
+    //   1. Running from a dev monorepo checkout (most common: ~/Developer/.../agent-os)
+    //   2. Legacy ~/.agent-os-src source install
+    //   3. npm/bun global package (`npm install -g agent-os`)
+    const devRoot = findDevMonorepoRoot();
+    const legacySrc = join(homedir(), '.agent-os-src');
+    const hasBun = (() => { try { execSync('bun --version', { stdio: 'pipe' }); return true; } catch { return false; } })();
+    const pkgInstall = hasBun ? 'bun install --silent' : 'npm install --silent --no-audit --no-fund';
+
+    const srcDir = devRoot ?? (existsSync(legacySrc) ? legacySrc : null);
+
+    if (srcDir) {
+      const lines: string[] = [`⟳ dev install detected at ${srcDir}`];
+      const hasGit = existsSync(join(srcDir, '.git'));
+      if (hasGit) {
+        try {
+          const out = execSync('git pull --ff-only', {
+            cwd: srcDir,
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }).trim();
+          lines.push(out.includes('Already up to date') ? '· already up to date' : '✓ pulled latest');
+        } catch (err) {
+          const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+          lines.push(`⚠ git pull skipped — ${msg}`);
+        }
+      } else {
+        lines.push('· not a git checkout, skipping pull');
+      }
+      try {
+        execSync(pkgInstall, { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
+        lines.push(`✓ workspace deps synced (${hasBun ? 'bun' : 'npm'})`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+        lines.push(`⚠ install warnings — ${msg}`);
+      }
+      try {
+        execSync('npm run build', { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
+        lines.push('✓ build complete');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return `${lines.join('\n')}\n✗ build failed:\n${msg}`;
+      }
+      lines.push('', 'Restart aos (exit + re-run) to load the new build.');
+      return lines.join('\n');
+    }
+
+    // No local source tree — try updating via the package manager.
+    const cmd = hasBun ? 'bun update -g agent-os' : 'npm update -g agent-os --no-audit --no-fund';
+    try {
+      execSync(cmd, { stdio: 'pipe' });
+      return `Updated via ${hasBun ? 'bun' : 'npm'}. Restart aos to use the new version.`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      return `Update failed (${msg}).\nTry: npm install -g agent-os`;
+    }
   },
 
   exit: () => {

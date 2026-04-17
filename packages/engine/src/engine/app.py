@@ -293,7 +293,7 @@ async def process_memory(request: MemoryRequest) -> MemoryResponse:
 
 @app.get("/learner/stats", tags=["learner"])
 async def learner_stats() -> dict[str, Any]:
-    """Current background learner statistics — memory health, pass timestamps."""
+    """Current background learner statistics — memory health, pass timestamps, maturity."""
     if _LEARNER is None:
         raise HTTPException(status_code=503, detail="Learner not started")
     return _LEARNER.get_stats()
@@ -313,6 +313,36 @@ async def learner_hot_topics(limit: int = 10) -> list[dict[str, Any]]:
     if _LEARNER is None:
         return []
     return _LEARNER.get_hot_topics(limit=min(limit, 50))
+
+
+@app.get("/learner/self-model", tags=["learner"])
+async def learner_self_model() -> dict[str, Any]:
+    """
+    The learner's most recent self-assessment snapshot.
+    Includes identity, memory health, what it can/cannot change, and growth observations.
+    """
+    if _LEARNER is None:
+        return {"error": "Learner not started"}
+    return _LEARNER.get_self_model()
+
+
+@app.get("/learner/audit-log", tags=["learner"])
+async def learner_audit_log(limit: int = 20) -> list[dict[str, Any]]:
+    """
+    Append-only audit log of all self-updates the learner has made.
+    Every parameter change is recorded here before it is applied.
+    """
+    if _LEARNER is None:
+        return []
+    return _LEARNER.get_audit_log(limit=min(limit, 200))
+
+
+@app.get("/learner/config", tags=["learner"])
+async def learner_config() -> dict[str, Any]:
+    """Current mutable configuration values with their bounds and descriptions."""
+    if _LEARNER is None:
+        return {}
+    return _LEARNER.get_config()
 
 
 @app.post("/trigger_sleep", response_model=SleepResponse, tags=["memory"])

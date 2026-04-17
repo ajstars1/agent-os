@@ -4,8 +4,8 @@ import {
   GatewayIntentBits,
   Partials,
 } from 'discord.js';
-import type { AgentEngine } from '@agent-os/core';
-import type { Config, Logger } from '@agent-os/shared';
+import type { AgentEngine } from '@agent-os-core/core';
+import type { Config, Logger } from '@agent-os-core/shared';
 import { handleMessage } from './handlers/message.js';
 import { handleInteraction } from './handlers/interaction.js';
 

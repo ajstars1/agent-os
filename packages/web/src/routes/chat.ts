@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { AgentEngine, AgentLoader } from '@agent-os/core';
-import type { Logger, LLMProvider } from '@agent-os/shared';
+import type { AgentEngine, AgentLoader } from '@agent-os-core/core';
+import type { Logger, LLMProvider } from '@agent-os-core/shared';
 import { ChatRequestSchema } from '../schemas/chat.js';
 
 export function chatRoute(

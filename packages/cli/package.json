@@ -1,11 +1,20 @@
 {
-  "name": "@agent-os/cli",
+  "name": "@agent-os-core/cli",
   "version": "0.1.0",
-  "private": true,
+  "description": "Terminal REPL adapter for agent-os — the `aos` CLI.",
+  "license": "MIT",
   "type": "module",
   "bin": {
-    "agent": "./dist/index.js",
-    "ask": "./dist/ask.js"
+    "aos": "./dist/index.js",
+    "aos-ask": "./dist/ask.js",
+    "aos-status": "./dist/status.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
@@ -15,8 +24,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-os/core": "*",
-    "@agent-os/shared": "*",
+    "@agent-os-core/core": "0.1.0",
+    "@agent-os-core/shared": "0.1.0",
     "@types/react": "^19.2.14",
     "chalk": "^5.4.1",
     "dotenv": "^16.4.0",

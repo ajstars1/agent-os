@@ -31,22 +31,99 @@ function resolveEnv(): void {
 
 resolveEnv();
 
-import { loadConfig } from '@agent-os/shared';
-import { bootstrap } from '@agent-os/core';
+import { loadConfig } from '@agent-os-core/shared';
+import { bootstrap } from '@agent-os-core/core';
 import { App } from './ui/App.js';
 
 // ─── Args ─────────────────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]): { agent?: string; model?: string } {
-  const result: { agent?: string; model?: string } = {};
+function parseArgs(argv: string[]): { agent?: string; model?: string; update?: boolean } {
+  const result: { agent?: string; model?: string; update?: boolean } = {};
   for (let i = 2; i < argv.length; i++) {
-    if ((argv[i] === '--agent' || argv[i] === '-a') && argv[i + 1]) {
+    if (argv[i] === 'update' || argv[i] === '--update') {
+      result.update = true;
+    } else if ((argv[i] === '--agent' || argv[i] === '-a') && argv[i + 1]) {
       result.agent = argv[i + 1]; i++;
     } else if ((argv[i] === '--model' || argv[i] === '-m') && argv[i + 1]) {
       result.model = argv[i + 1]; i++;
     }
   }
   return result;
+}
+
+// ─── Update ───────────────────────────────────────────────────────────────────
+
+async function runUpdate(): Promise<void> {
+  const { execSync } = await import('node:child_process');
+  const { existsSync } = await import('node:fs');
+  const E = '\x1b';
+  const green  = (s: string) => `${E}[32m${s}${E}[0m`;
+  const cyan   = (s: string) => `${E}[36m${s}${E}[0m`;
+  const dim    = (s: string) => `${E}[2m${s}${E}[0m`;
+  const yellow = (s: string) => `${E}[33m${s}${E}[0m`;
+  const red    = (s: string) => `${E}[31m${s}${E}[0m`;
+
+  process.stdout.write('\n');
+
+  // Detect install location
+  const srcDir = join(homedir(), '.agent-os-src');
+  const isNpmGlobal = !existsSync(srcDir);
+
+  const hasBun = (() => { try { execSync('bun --version', { stdio: 'pipe' }); return true; } catch { return false; } })();
+  const pkgInstall = hasBun ? 'bun install --silent' : 'npm install --silent';
+  const pkgBuild   = 'npm run build'; // always npm — turbo is invoked via npm scripts
+
+  if (isNpmGlobal) {
+    const upgradeCmd = hasBun ? 'bun update -g agent-os' : 'npm update -g agent-os';
+    process.stdout.write(`  ${cyan(`Updating via ${hasBun ? 'bun' : 'npm'}…`)}\n\n`);
+    try {
+      execSync(upgradeCmd, { stdio: 'inherit' });
+      process.stdout.write(`\n  ${green('✓')} agent-os updated.\n\n`);
+    } catch {
+      process.stdout.write(`\n  ${red('✗')} update failed. Try: ${cyan('npm install -g agent-os')}\n\n`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  process.stdout.write(`  ${dim('source')}  ${srcDir}\n\n`);
+
+  // 1. git pull
+  process.stdout.write(`  ${dim('→')} pulling latest…\n`);
+  try {
+    const out = execSync('git pull --ff-only', { cwd: srcDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (out.includes('Already up to date')) {
+      process.stdout.write(`  ${dim('·')} already up to date\n`);
+    } else {
+      process.stdout.write(`  ${green('✓')} pulled\n`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stdout.write(`  ${yellow('⚠')} git pull failed — ${dim(msg.split('\n')[0] ?? '')}\n`);
+    process.stdout.write(`  ${dim('continuing with existing source…')}\n`);
+  }
+
+  // 2. install deps (bun if available, else npm)
+  process.stdout.write(`  ${dim('→')} installing dependencies…\n`);
+  try {
+    execSync(pkgInstall, { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
+    process.stdout.write(`  ${green('✓')} dependencies up to date\n`);
+  } catch {
+    process.stdout.write(`  ${yellow('⚠')} install had warnings — proceeding\n`);
+  }
+
+  // 3. build
+  process.stdout.write(`  ${dim('→')} building packages…\n`);
+  try {
+    execSync(pkgBuild, { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
+    process.stdout.write(`  ${green('✓')} build complete\n`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stdout.write(`\n  ${red('✗')} build failed:\n${msg}\n\n`);
+    process.exit(1);
+  }
+
+  process.stdout.write(`\n  ${green('Done.')} Restart ${cyan('aos')} to use the new version.\n\n`);
 }
 
 // ─── First-run setup ──────────────────────────────────────────────────────────
@@ -125,10 +202,10 @@ const LOGO = `   ▗▄▖  ▗▄▄▖  ▗▄▄▖
   ▐▌ ▐▌▝▚▄▞▘▗▄▄▞▘`;
 
 function printBanner(opts: {
-  projectName: string; model: string; skillCount: number; memoryCount: number;
+  projectName: string; model: string; skillCount: number; memoryCount: number; noKeys?: boolean;
 }): void {
   if (!process.stdout.isTTY) return;
-  const { projectName, model, skillCount, memoryCount } = opts;
+  const { projectName, model, skillCount, memoryCount, noKeys } = opts;
   const E = '\x1b';
   const reset   = `${E}[0m`;
   const dim     = (s: string) => `${E}[2m${s}${reset}`;
@@ -153,6 +230,10 @@ function printBanner(opts: {
     }
   } catch { /* not a git repo */ }
 
+  const setupLine = noKeys
+    ? `  ${yellow('⚠  No API key set.')}  Run ${cyan('/config set ANTHROPIC_API_KEY <key>')}  or  ${cyan('/config web')}`
+    : `  ${dim('type a message, or ')}${cyan('/help')}${dim(' · ')}${cyan('/skillname')}${dim(' to invoke a skill')}`;
+
   const out = [
     '',
     ...LOGO.split('\n').map((l) => `  ${magenta(l)}`),
@@ -160,7 +241,7 @@ function printBanner(opts: {
     `  ${dim('project')}  ${bold(white(projectName))}    ${dim('cwd')}  ${dim(cwdShort)}`,
     `  ${dim('model')}    ${cyan(model)}${gitLine}    ${dim('skills')}  ${dim(String(skillCount))}    ${dim('memory')}  ${dim(memoryCount + ' topics')}`,
     `  ${dim('─'.repeat(52))}`,
-    `  ${dim('type a message, or ')}${cyan('/help')}${dim(' · ')}${cyan('/skillname')}${dim(' to invoke a skill')}`,
+    setupLine,
     '',
   ].join('\n');
 
@@ -171,22 +252,24 @@ function printBanner(opts: {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
+
+  if (args.update) {
+    await runUpdate();
+    process.exit(0);
+  }
+
   process.env['LOG_LEVEL'] = 'warn';
 
   let config;
   try {
     config = loadConfig(process.env);
-  } catch {
-    // Key missing → interactive setup, then retry once
-    await firstRunSetup();
-    try {
-      config = loadConfig(process.env);
-    } catch (err2: unknown) {
-      const msg = err2 instanceof Error ? err2.message : String(err2);
-      process.stderr.write(`\nConfiguration error: ${msg}\n\n`);
-      process.exit(1);
-    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`\nConfiguration error: ${msg}\n\n`);
+    process.exit(1);
   }
+
+  const noKeys = !config.ANTHROPIC_API_KEY && !config.GOOGLE_API_KEY;
 
   if (args.model && ['claude', 'gemini', 'auto'].includes(args.model)) {
     config = { ...config, DEFAULT_MODEL: args.model as typeof config.DEFAULT_MODEL };
@@ -206,7 +289,7 @@ async function main(): Promise<void> {
 
   stopSpin();
 
-  const { engine, skills, memory, tools, hamStore, hamCompressor, agents } = bootstrapped;
+  const { engine, skills, memory, tools, hamStore, hamCompressor, agents, feedbackStore } = bootstrapped;
   const channelId = process.pid.toString();
 
   const skillCount  = skills.getSkillNames().length;
@@ -216,7 +299,7 @@ async function main(): Promise<void> {
 
   // Print banner to stdout BEFORE Ink takes over — this way it stays at the
   // top of the scrollback and is never overwritten by Ink's dynamic content.
-  printBanner({ projectName, model, skillCount, memoryCount });
+  printBanner({ projectName, model, skillCount, memoryCount, noKeys });
 
   const shutdown = (): void => {
     memory.close();
@@ -235,6 +318,7 @@ async function main(): Promise<void> {
       hamCompressor,
       agents,
       model,
+      feedbackStore,
     }),
     { exitOnCtrlC: false },
   );

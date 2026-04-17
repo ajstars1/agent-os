@@ -92,10 +92,10 @@ export class NeuralClient {
   readonly timeoutMs: number;
 
   /**
-   * @param baseUrl   - Engine URL. Defaults to `http://localhost:8000`.
+   * @param baseUrl   - Engine URL. Defaults to `http://localhost:8765`.
    * @param timeoutMs - Request timeout in ms. Defaults to `10_000` (10 s).
    */
-  constructor(baseUrl = 'http://localhost:8000', timeoutMs = 10_000) {
+  constructor(baseUrl = 'http://localhost:8765', timeoutMs = 10_000) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.timeoutMs = timeoutMs;
   }

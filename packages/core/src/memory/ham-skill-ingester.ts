@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 import type { TieredStore } from './tiered-store.js';
 import type { HAMCompressor } from './compressor.js';
 

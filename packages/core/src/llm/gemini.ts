@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import type { StreamChunk } from '@agent-os/shared';
+import type { StreamChunk } from '@agent-os-core/shared';
 
 export type GeminiVariant =
   | 'flash'

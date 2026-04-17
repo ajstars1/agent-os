@@ -1,7 +1,8 @@
 {
-  "name": "@agent-os/core",
+  "name": "@agent-os-core/core",
   "version": "0.1.0",
-  "private": true,
+  "description": "Core engine, LLM clients, memory, tools, and skills for agent-os.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,6 +11,13 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
@@ -20,7 +28,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-os/shared": "*",
+    "@agent-os-core/shared": "0.1.0",
     "@anthropic-ai/sdk": "^0.40.0",
     "@google/genai": "^1.50.1",
     "@modelcontextprotocol/sdk": "^1.25.3",

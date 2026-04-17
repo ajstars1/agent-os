@@ -15,7 +15,7 @@
 import type { ClaudeClient } from '../llm/claude.js';
 import type { GeminiClient } from '../llm/gemini.js';
 import type { TaskType } from './task-queue.js';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 
 export interface WorkerConfig {
   type: TaskType;
@@ -66,7 +66,7 @@ export class WorkerAgent {
 
   constructor(
     private readonly config: WorkerConfig,
-    private readonly claude: ClaudeClient,
+    private readonly claude: ClaudeClient | null,
     private readonly gemini: GeminiClient | null,
     private readonly logger: Logger,
   ) {
@@ -126,6 +126,7 @@ export class WorkerAgent {
     }
 
     // Claude path
+    if (!this.claude) return '[Claude not configured — set ANTHROPIC_API_KEY]';
     let output = '';
     for await (const chunk of this.claude.stream(
       [{ role: 'user', content: instruction }],

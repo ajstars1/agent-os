@@ -1,6 +1,6 @@
 import { type Interaction, type ChatInputCommandInteraction } from 'discord.js';
-import type { AgentEngine } from '@agent-os/core';
-import type { Logger } from '@agent-os/shared';
+import type { AgentEngine } from '@agent-os-core/core';
+import type { Logger } from '@agent-os-core/shared';
 import {
   handleAsk,
   handleClear,

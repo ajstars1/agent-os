@@ -28,7 +28,7 @@ export type { SkillSuggestion } from './skills/recommender.js';
 export { ToolRegistry } from './tools/registry.js';
 export { MCPClient } from './tools/mcp-client.js';
 export type { MCPServerConfig } from './tools/mcp-client.js';
-export { registerBuiltinTools } from './tools/builtin.js';
+export { registerBuiltinTools, setPermissionCallback } from './tools/builtin.js';
 export { AgentLoader } from './agents/loader.js';
 export type { AgentProfile } from './agents/types.js';
 export { TaskQueue } from './agents/task-queue.js';
@@ -42,8 +42,11 @@ export { CodeAgent } from './agents/specialists/code.js';
 export { PlannerAgent } from './agents/specialists/planner.js';
 export { LearnerClient } from './memory/learner-client.js';
 export type { Prediction, HotTopic, LearnerWarmup } from './memory/learner-client.js';
+export { FeedbackStore } from './memory/feedback-store.js';
+export type { FeedbackEntry } from './memory/feedback-store.js';
 
-import type { Config } from '@agent-os/shared';
+import type { Config } from '@agent-os-core/shared';
+import { FeedbackStore as _FeedbackStore } from './memory/feedback-store.js';
 import { ClaudeClient } from './llm/claude.js';
 import { GeminiClient } from './llm/gemini.js';
 import { LLMRouter } from './llm/router.js';
@@ -60,7 +63,7 @@ import { ToolRegistry } from './tools/registry.js';
 import { AgentEngine } from './engine.js';
 import { AgentLoader } from './agents/loader.js';
 import { registerBuiltinTools } from './tools/builtin.js';
-import { createLogger } from '@agent-os/shared';
+import { createLogger } from '@agent-os-core/shared';
 import { NeuralClient } from './memory/neural-client.js';
 import { LearnerClient } from './memory/learner-client.js';
 import { join, dirname } from 'node:path';
@@ -82,6 +85,7 @@ export interface BootstrapResult {
   episodicStore: EpisodicStore;
   userProfileStore: UserProfileStore;
   learnerClient: LearnerClient;
+  feedbackStore: _FeedbackStore;
 }
 
 export async function bootstrap(config: Config): Promise<BootstrapResult> {
@@ -115,7 +119,7 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
     logger.warn({ err }, 'Failed to load MCP config');
   }
 
-  const claude = new ClaudeClient(config.ANTHROPIC_API_KEY);
+  const claude = config.ANTHROPIC_API_KEY ? new ClaudeClient(config.ANTHROPIC_API_KEY) : null;
   const gemini = config.GOOGLE_API_KEY ? new GeminiClient(config.GOOGLE_API_KEY) : null;
   const router = new LLMRouter(gemini, config.DEFAULT_MODEL);
 
@@ -154,6 +158,8 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
     });
   }
 
+  const feedbackStore = new _FeedbackStore(config.DB_PATH.replace('.db', '-feedback.db'));
+
   const engine = new AgentEngine(
     config, memory, skills, tools, claude, gemini, router, logger,
     hamRetriever, hamStore, hamCompressor,
@@ -162,7 +168,8 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
     userProfileStore,
     profileExtractor,
     learnerTopics,          // pre-loaded hot topics from bg learner
+    feedbackStore,
   );
 
-  return { engine, memory, skills, tools, agents, hamStore, hamCompressor, episodicStore, userProfileStore, learnerClient };
+  return { engine, memory, skills, tools, agents, hamStore, hamCompressor, episodicStore, userProfileStore, learnerClient, feedbackStore };
 }

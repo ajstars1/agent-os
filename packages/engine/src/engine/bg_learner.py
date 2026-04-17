@@ -21,12 +21,22 @@ import asyncio
 import json
 import logging
 import math
+import os
 import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from engine.self_updater import (
+    SelfUpdater,
+    analyze_and_propose,
+    ensure_audit_schema,
+    load_config,
+    MUTABLE_PARAMS,
+    IMMUTABLE_CONSTITUTION,
+)
 
 logger = logging.getLogger("bg_learner")
 
@@ -106,6 +116,15 @@ def _get_maturity_level(episode_count: int) -> str:
 # ── Schema migration ──────────────────────────────────────────────────────────
 
 _LEARNER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS self_model (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_ms     INTEGER NOT NULL,
+    maturity        TEXT NOT NULL,
+    episode_count   INTEGER NOT NULL,
+    report          TEXT NOT NULL,
+    config_snapshot TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS interest_map (
     topic           TEXT PRIMARY KEY,
     weight          REAL DEFAULT 0.0,
@@ -531,6 +550,223 @@ def _llm_consolidation_pass(db_path: str, google_api_key: str) -> int:
     return merged
 
 
+def _self_model_pass(db_path: str, maturity: str, episode_count: int) -> dict[str, Any]:
+    """
+    Write a self-assessment snapshot to the self_model table.
+
+    The learner introspects its own state and generates a structured report:
+    - What it is (maturity level, capabilities)
+    - What it knows (memory stats)
+    - How it's performing (prediction yield, interest map health)
+    - What it wants to change (proposals, within allowed bounds)
+    - What it cannot change (constitution reminder)
+
+    This runs weekly. It's the learner's written understanding of itself.
+    """
+    now_ms = int(time.time() * 1000)
+    config = load_config(db_path)
+
+    try:
+        with _connect(db_path) as conn:
+            # Memory stats
+            ep_count = conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+            interest_count = conn.execute("SELECT COUNT(*) FROM interest_map").fetchone()[0]
+            graph_edges = conn.execute("SELECT COUNT(*) FROM topic_graph").fetchone()[0]
+            today = date.today().isoformat()
+            predictions_today = conn.execute(
+                "SELECT COUNT(*) FROM predictions WHERE predicted_date = ?", (today,)
+            ).fetchone()[0]
+
+            # Recent updates
+            recent_updates = conn.execute(
+                """SELECT param_key, old_value, new_value, reason, timestamp_ms
+                   FROM update_audit_log WHERE applied = 1
+                   ORDER BY timestamp_ms DESC LIMIT 5"""
+            ).fetchall()
+
+            # Top topics
+            top_topics = conn.execute(
+                "SELECT topic, weight FROM interest_map ORDER BY weight DESC LIMIT 5"
+            ).fetchall()
+
+        # Capabilities based on maturity
+        capabilities = ["decay_pass", "interest_map", "predictions"]
+        if maturity in ("teen", "young_adult", "adult"):
+            capabilities.append("cooccurrence_graph")
+        if maturity in ("young_adult", "adult"):
+            capabilities.append("llm_consolidation_1x_daily")
+        if maturity == "adult":
+            capabilities.append("web_research_1x_weekly")
+
+        # Next unlock
+        next_ul = _next_unlock(episode_count)
+
+        # What I cannot change (explicit self-awareness of constitution)
+        cannot_change = sorted(IMMUTABLE_CONSTITUTION)
+
+        # What I can change
+        can_change = {k: {"bounds": [v[0], v[1]], "current": config.get(k), "desc": v[2]}
+                      for k, v in MUTABLE_PARAMS.items()}
+
+        report = {
+            "generated_at": today,
+            "identity": {
+                "maturity": maturity,
+                "episode_count": int(ep_count),
+                "capabilities": capabilities,
+                "next_unlock": next_ul,
+            },
+            "memory_health": {
+                "episodes": int(ep_count),
+                "interest_topics": int(interest_count),
+                "graph_edges": int(graph_edges),
+                "predictions_today": int(predictions_today),
+                "top_topics": [{"topic": r[0], "weight": round(float(r[1]), 4)}
+                               for r in top_topics],
+            },
+            "self_governance": {
+                "cannot_change": cannot_change,
+                "can_change": can_change,
+                "recent_updates": [
+                    {
+                        "param": r[0],
+                        "old": round(float(r[1]), 4),
+                        "new": round(float(r[2]), 4),
+                        "reason": r[3],
+                        "when_ms": r[4],
+                    }
+                    for r in recent_updates
+                ],
+            },
+            "growth_observations": _growth_observations(db_path, maturity, episode_count, config),
+        }
+
+        config_snapshot = json.dumps(config)
+
+        with _connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO self_model (snapshot_ms, maturity, episode_count, report, config_snapshot) VALUES (?, ?, ?, ?, ?)",
+                (now_ms, maturity, episode_count, json.dumps(report), config_snapshot),
+            )
+            # Keep only last 52 snapshots (one year of weekly snapshots)
+            conn.execute(
+                "DELETE FROM self_model WHERE id NOT IN (SELECT id FROM self_model ORDER BY snapshot_ms DESC LIMIT 52)"
+            )
+            conn.commit()
+
+        logger.info(
+            "[SelfModel] Snapshot written — maturity=%s episodes=%d capabilities=%s",
+            maturity, episode_count, capabilities,
+        )
+        return report
+
+    except Exception as e:
+        logger.warning("[SelfModel] Pass failed: %s", e)
+        return {}
+
+
+def _growth_observations(
+    db_path: str,
+    maturity: str,
+    episode_count: int,
+    config: dict[str, float],
+) -> list[str]:
+    """Generate plain-language observations about growth and what to do more of."""
+    observations: list[str] = []
+
+    # Maturity progress
+    next_ul = _next_unlock(episode_count)
+    remaining = next_ul.get("remaining", 0)
+    if isinstance(remaining, int) and remaining > 0:
+        observations.append(
+            f"I am {episode_count} episodes old (maturity: {maturity}). "
+            f"{remaining} more significant interactions will unlock '{next_ul.get('unlocks')}'."
+        )
+
+    # Interest lambda observation
+    il = config.get("INTEREST_LAMBDA", 0.10)
+    if il > 0.15:
+        observations.append(
+            f"My interest decay rate (INTEREST_LAMBDA={il:.3f}) is relatively high. "
+            f"Topics I care about fade quickly. If this seems wrong, I may self-adjust after "
+            f"collecting more data."
+        )
+    elif il < 0.07:
+        observations.append(
+            f"My interest decay rate (INTEREST_LAMBDA={il:.3f}) is low. "
+            f"I hold onto topics a long time. Good for long projects, risky for topic pollution."
+        )
+
+    # Prediction confidence
+    pcm = config.get("PREDICTION_CONFIDENCE_MIN", 0.15)
+    if pcm > 0.25:
+        observations.append(
+            f"My prediction threshold (PREDICTION_CONFIDENCE_MIN={pcm:.3f}) is strict. "
+            f"I only surface topics I'm very confident about. This means fewer but higher-quality predictions."
+        )
+
+    # Graph health
+    try:
+        with _connect(db_path) as conn:
+            edges = conn.execute("SELECT COUNT(*) FROM topic_graph").fetchone()[0]
+        if edges == 0 and maturity in ("teen", "young_adult", "adult"):
+            observations.append(
+                "My co-occurrence graph is empty. I need more multi-topic conversations "
+                "to start understanding how concepts relate to each other."
+            )
+        elif edges > 100:
+            observations.append(
+                f"My topic graph has {edges} edges. I'm starting to understand how concepts "
+                f"relate in this user's world."
+            )
+    except Exception:
+        pass
+
+    if not observations:
+        observations.append(
+            f"I am functioning normally at maturity level '{maturity}' with {episode_count} episodes. "
+            f"No anomalies detected."
+        )
+
+    return observations
+
+
+def _self_update_pass(db_path: str, maturity: str, episode_count: int) -> list[dict[str, Any]]:
+    """
+    Analyze metrics and apply any warranted self-updates.
+    Only runs for teen+ (needs enough data to make meaningful decisions).
+    Updates are gated by SelfUpdater — audit log mandatory, bounds enforced.
+    """
+    if maturity == "child":
+        return []
+
+    proposals = analyze_and_propose(db_path, maturity, episode_count)
+    if not proposals:
+        return []
+
+    updater = SelfUpdater(db_path, maturity, episode_count)
+    applied: list[dict[str, Any]] = []
+
+    for proposal in proposals:
+        try:
+            result = updater.propose(
+                key=proposal["key"],
+                new_value=proposal["new_value"],
+                reason=proposal["reason"],
+            )
+            applied.append(result)
+        except PermissionError as e:
+            # Constitution violation — log and continue
+            logger.error("[SelfUpdate] Constitution violation attempt: %s", e)
+        except (ValueError, RuntimeError) as e:
+            # Rate limit, bounds, or apply failure — expected, not critical
+            logger.debug("[SelfUpdate] Proposal rejected: %s", e)
+        except Exception as e:
+            logger.warning("[SelfUpdate] Unexpected error: %s", e)
+
+    return applied
+
+
 # ── BackgroundLearner class ───────────────────────────────────────────────────
 
 class BackgroundLearner:
@@ -581,6 +817,11 @@ class BackgroundLearner:
             logger.warning("BackgroundLearner: schema init failed: %s", exc)
             return
 
+        try:
+            ensure_audit_schema(self.db_path)
+        except Exception as exc:
+            logger.warning("BackgroundLearner: audit schema init failed: %s", exc)
+
         self._refresh_maturity()
         logger.info(
             "BackgroundLearner starting (maturity=%s) on %s",
@@ -591,9 +832,11 @@ class BackgroundLearner:
         self._tasks = [
             loop.create_task(self._decay_loop()),
             loop.create_task(self._interest_loop()),
-            loop.create_task(self._cooccurrence_loop()),   # teen+
+            loop.create_task(self._cooccurrence_loop()),    # teen+
             loop.create_task(self._prediction_loop()),
-            loop.create_task(self._consolidation_loop()),  # young_adult+
+            loop.create_task(self._consolidation_loop()),   # young_adult+
+            loop.create_task(self._self_model_loop()),      # weekly self-assessment
+            loop.create_task(self._self_update_loop()),     # weekly self-tuning (teen+)
         ]
 
     async def stop(self) -> None:
@@ -636,6 +879,29 @@ class BackgroundLearner:
         while self._running:
             await self._run(_prediction_pass, "predictions")
             await asyncio.sleep(24 * 60 * 60)
+
+    async def _self_model_loop(self) -> None:
+        """Weekly self-assessment — writes structured self-awareness snapshot."""
+        await asyncio.sleep(240)  # startup delay
+        while self._running:
+            self._refresh_maturity()
+            await self._run(
+                lambda db: _self_model_pass(db, self._maturity, self._episode_count()),
+                "self_model",
+            )
+            await asyncio.sleep(7 * 24 * 60 * 60)  # weekly
+
+    async def _self_update_loop(self) -> None:
+        """Weekly self-tuning — proposes and applies config changes (teen+ only)."""
+        await asyncio.sleep(270)  # after self-model run
+        while self._running:
+            self._refresh_maturity()
+            if self._maturity != "child":
+                await self._run(
+                    lambda db: _self_update_pass(db, self._maturity, self._episode_count()),
+                    "self_update",
+                )
+            await asyncio.sleep(7 * 24 * 60 * 60)  # weekly
 
     async def _consolidation_loop(self) -> None:
         """Once per day — YOUNG_ADULT+ only. One LLM call to merge near-dupes."""
@@ -714,6 +980,52 @@ class BackgroundLearner:
                     for r in rows]
         except Exception:
             return []
+
+    def get_self_model(self) -> dict[str, object]:
+        """Return the most recent self-assessment snapshot."""
+        try:
+            with _connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT report, snapshot_ms FROM self_model ORDER BY snapshot_ms DESC LIMIT 1"
+                ).fetchone()
+                if not row:
+                    return {
+                        "note": "No self-model snapshot yet. First snapshot runs 4 minutes after startup, then weekly.",
+                        "maturity": self._maturity,
+                        "episode_count": self._episode_count(),
+                    }
+                return {
+                    "snapshot_ms": row["snapshot_ms"],
+                    **json.loads(row["report"]),
+                }
+        except Exception:
+            return {"error": "self_model unavailable"}
+
+    def get_audit_log(self, limit: int = 20) -> list[dict[str, object]]:
+        """Return recent audit log entries (all self-updates ever made)."""
+        try:
+            from engine.self_updater import SelfUpdater  # type: ignore[import]
+            updater = SelfUpdater(self.db_path, self._maturity, self._episode_count())
+            return updater.get_audit_log(limit)
+        except Exception:
+            return []
+
+    def get_config(self) -> dict[str, object]:
+        """Return current mutable config with bounds and descriptions."""
+        try:
+            from engine.self_updater import load_config, MUTABLE_PARAMS  # type: ignore[import]
+            current = load_config(self.db_path)
+            return {
+                key: {
+                    "value": current.get(key),
+                    "min": bounds[0],
+                    "max": bounds[1],
+                    "description": bounds[2],
+                }
+                for key, bounds in MUTABLE_PARAMS.items()
+            }
+        except Exception:
+            return {}
 
     def get_hot_topics(self, limit: int = 10) -> list[dict[str, object]]:
         try:

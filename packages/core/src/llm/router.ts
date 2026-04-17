@@ -1,4 +1,4 @@
-import type { LLMProvider } from '@agent-os/shared';
+import type { LLMProvider } from '@agent-os-core/shared';
 import type { GeminiVariant } from './gemini.js';
 
 /** Minimal interface LLMRouter needs from GeminiClient — allows mock injection in tests */

@@ -1,4 +1,4 @@
-import type { Message, Conversation, ChannelType } from '@agent-os/shared';
+import type { Message, Conversation, ChannelType } from '@agent-os-core/shared';
 
 export interface IMemoryStore {
   getOrCreateConversation(channel: ChannelType, channelId: string): Conversation;

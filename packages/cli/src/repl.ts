@@ -2,8 +2,8 @@ import * as readline from 'node:readline/promises';
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor, AgentLoader } from '@agent-os/core';
-import type { LLMProvider } from '@agent-os/shared';
+import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor, AgentLoader } from '@agent-os-core/core';
+import type { LLMProvider } from '@agent-os-core/shared';
 import { isCommand, handleCommand, type CommandContext } from './commands/index.js';
 
 // ─── ANSI ─────────────────────────────────────────────────────────────────────
@@ -247,6 +247,11 @@ export class Repl {
               provider = chunk.provider;
               this.spinner.update(`${chunk.provider} is thinking…`);
             }
+            break;
+
+          case 'status':
+            // Orchestrator progress updates — show on spinner only
+            if (chunk.content) this.spinner.update(chunk.content);
             break;
 
           case 'text':

@@ -1,5 +1,5 @@
 {
-  "name": "@agent-os/web",
+  "name": "@agent-os-core/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-os/core": "*",
-    "@agent-os/shared": "*",
+    "@agent-os-core/core": "*",
+    "@agent-os-core/shared": "*",
     "@hono/node-server": "^1.13.7",
     "dotenv": "^16.4.0",
     "hono": "^4.6.14",

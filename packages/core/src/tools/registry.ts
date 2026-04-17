@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import type { ToolDefinition, ToolResult, Logger } from '@agent-os/shared';
+import type { ToolDefinition, ToolResult, Logger } from '@agent-os-core/shared';
 import { MCPClient, type MCPServerConfig } from './mcp-client.js';
 
 interface MCPConfig {
@@ -48,7 +48,7 @@ export class ToolRegistry {
         this.clients.set(name, client);
         this.logger.info({ server: name, toolCount: tools.length }, 'MCP tools loaded');
       } catch (err: unknown) {
-        this.logger.warn({ err, server: name }, 'Failed to connect MCP server');
+        this.logger.debug({ err, server: name }, 'Failed to connect MCP server');
       }
     }
   }

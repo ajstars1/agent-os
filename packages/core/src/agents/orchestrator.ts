@@ -19,7 +19,7 @@
 import type { ClaudeClient } from '../llm/claude.js';
 import type { GeminiClient, GeminiVariant } from '../llm/gemini.js';
 import type { EpisodicStore } from '../memory/episodic-store.js';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 import { WorkerAgent } from './worker.js';
 import type { WorkerResult } from './worker.js';
 import type { TaskType } from './task-queue.js';
@@ -97,7 +97,7 @@ export class Orchestrator {
   private static readonly MAX_CONCURRENCY = 3;
 
   constructor(
-    private readonly claude: ClaudeClient,
+    private readonly claude: ClaudeClient | null,
     private readonly gemini: GeminiClient | null,
     private readonly episodicStore: EpisodicStore | undefined,
     private readonly logger: Logger,
@@ -302,7 +302,7 @@ export class Orchestrator {
       )) {
         if (chunk.type === 'text' && chunk.content) text += chunk.content;
       }
-    } else {
+    } else if (this.claude) {
       for await (const chunk of this.claude.stream(
         [{ role: 'user', content: prompt }],
         systemPrompt,

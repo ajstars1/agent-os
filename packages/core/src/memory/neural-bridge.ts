@@ -5,7 +5,7 @@
  *
  * Usage:
  * ```ts
- * const bridge = new NeuralBridge("http://localhost:8000");
+ * const bridge = new NeuralBridge("http://localhost:8765");
  *
  * const isUp = await bridge.isAvailable();
  * if (isUp) {
@@ -66,10 +66,10 @@ export class NeuralBridge {
   readonly baseUrl: string;
 
   /**
-   * @param baseUrl - URL of the Python engine. Defaults to `http://localhost:8000`.
+   * @param baseUrl - URL of the Python engine. Defaults to `http://localhost:8765`.
    *                  Override for staging/production deployments.
    */
-  constructor(baseUrl = 'http://localhost:8000') {
+  constructor(baseUrl = 'http://localhost:8765') {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 

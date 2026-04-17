@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import type { Message, Conversation, ChannelType } from '@agent-os/shared';
+import type { Message, Conversation, ChannelType } from '@agent-os-core/shared';
 import type { IMemoryStore } from './interface.js';
 
 function expandPath(p: string): string {

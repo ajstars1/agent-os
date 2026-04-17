@@ -36,8 +36,8 @@ function resolveEnv(): void {
 }
 resolveEnv();
 
-import { bootstrap } from '@agent-os/core';
-import { loadConfig } from '@agent-os/shared';
+import { bootstrap } from '@agent-os-core/core';
+import { loadConfig } from '@agent-os-core/shared';
 import { renderMarkdown } from './ui/markdown.js';
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
@@ -92,22 +92,21 @@ const CONCISE_OVERRIDE =
   '- No lengthy preambles, no "Method 1/2/3" sections unless explicitly asked.\n' +
   '- For "explain / how does / why" questions you may elaborate.';
 
-// ── Status line detection — orchestrator emits italic markdown status lines ────
-function isStatusLine(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.startsWith('_') && trimmed.endsWith('_');
-}
-
-function extractStatusLabel(text: string): string {
-  return text.trim().replace(/^_/, '').replace(/_$/, '').trim();
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
+  // `ask --status` is an alias for `agent-status` — handle before bootstrap
+  // so it works even without a valid Claude API key.
+  if (process.argv.includes('--status') || process.argv.includes('-s')) {
+    const { main: statusMain } = await import('./status.js');
+    await statusMain();
+    return;
+  }
+
   const { forceProvider, verbose, question } = parseArgs(process.argv);
 
   if (!question) {
     process.stderr.write('Usage: ask [--claude] [--verbose] "<question>"\n');
+    process.stderr.write('       ask --status               (engine status)\n');
     process.exit(1);
   }
 
@@ -143,8 +142,6 @@ async function main(): Promise<void> {
   const message = verbose ? question : `${CONCISE_OVERRIDE}\n\n${question}`;
 
   let fullAnswer = '';
-  // Buffer for multi-agent synthesized section (after `---` separator)
-  let inOrchestratedSection = false;
 
   try {
     for await (const chunk of engine.chat({
@@ -154,35 +151,13 @@ async function main(): Promise<void> {
       // Enable Google Search grounding when using Gemini (default in ask)
       useSearch: forceProvider !== 'claude' && !!config.GOOGLE_API_KEY,
     })) {
-      if (chunk.type === 'text' && chunk.content) {
-        const content = chunk.content;
-
-        // Detect orchestrator separator
-        if (content.includes('\n---\n')) {
-          inOrchestratedSection = true;
-          // Only show what comes after the separator
-          const afterSep = content.split('\n---\n').slice(1).join('\n---\n');
-          fullAnswer += afterSep;
-          continue;
-        }
-
-        if (inOrchestratedSection) {
-          fullAnswer += content;
-          continue;
-        }
-
-        // Detect status lines from orchestrator (_Routing to specialist agents..._)
-        const lines = content.split('\n');
-        for (const line of lines) {
-          if (isStatusLine(line)) {
-            spinner.update(extractStatusLabel(line));
-          } else if (line.trim()) {
-            // Real answer text starting — stop treating as status
-            fullAnswer += line + '\n';
-          }
-        }
+      if (chunk.type === 'status' && chunk.content) {
+        // Orchestrator progress — show on spinner only, never in output
+        spinner.update(chunk.content);
+      } else if (chunk.type === 'text' && chunk.content) {
+        fullAnswer += chunk.content;
       }
-      // Ignore provider, tool_call, tool_result, memory_saved, done chunks
+      // Ignore provider, tool_call, tool_result, memory_saved, done, thinking chunks
     }
 
     spinner.stop();

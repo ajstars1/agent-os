@@ -6,7 +6,7 @@
  */
 
 import type { GeminiClient } from '../../llm/gemini.js';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 
 const SYSTEM_PROMPT = `You are a research agent with access to live web search.
 Provide factual, current information. Structure your answer with:

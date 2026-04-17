@@ -10,6 +10,7 @@ const dim    = (s: string) => `${E}[2m${s}${reset}`;
 const italic = (s: string) => `${E}[3m${s}${reset}`;
 const cyan   = (s: string) => `${E}[36m${s}${reset}`;
 const yellow = (s: string) => `${E}[33m${s}${reset}`;
+const white  = (s: string) => `${E}[97m${s}${reset}`;
 
 /** Apply inline formatting to a single string (bold, italic, code). */
 function inlineFormat(text: string): string {
@@ -59,13 +60,15 @@ export function renderMarkdown(md: string): string {
       continue;
     }
 
-    // ── Headings ──────────────────────────────────────────────────────────────
-    const h3 = raw.match(/^###\s+(.*)/);
-    const h2 = raw.match(/^##\s+(.*)/);
-    const h1 = raw.match(/^#\s+(.*)/);
+    // ── Headings (check most specific first) ─────────────────────────────────
+    const h4 = raw.match(/^####\s+(.*)/);
+    const h3 = !h4 ? raw.match(/^###\s+(.*)/) : null;
+    const h2 = !h4 && !h3 ? raw.match(/^##\s+(.*)/) : null;
+    const h1 = !h4 && !h3 && !h2 ? raw.match(/^#\s+(.*)/) : null;
     if (h1) { out.push('\n' + bold(yellow(h1[1] ?? '')) + '\n'); continue; }
     if (h2) { out.push('\n' + bold(cyan(h2[1] ?? '')) + '\n'); continue; }
-    if (h3) { out.push(bold(h3[1] ?? '')); continue; }
+    if (h3) { out.push(bold(white(h3[1] ?? ''))); continue; }
+    if (h4) { out.push(bold(h4[1] ?? '')); continue; }
 
     // ── Horizontal rule ───────────────────────────────────────────────────────
     if (/^[-*_]{3,}$/.test(raw.trim())) {

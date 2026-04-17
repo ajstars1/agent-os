@@ -33,7 +33,7 @@ poetry run engine
 poetry run python main.py
 ```
 
-Interactive API docs available at <http://localhost:8000/docs>.
+Interactive API docs available at <http://localhost:8765/docs>.
 
 ## Testing
 

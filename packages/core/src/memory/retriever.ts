@@ -1,4 +1,4 @@
-import type { Message } from '@agent-os/shared';
+import type { Message } from '@agent-os-core/shared';
 import { StateRouter, type ConversationState, type RetrievalDepth } from './state-router.js';
 import type { TieredStore, L0Entry } from './tiered-store.js';
 import { NeuralClient } from './neural-client.js';

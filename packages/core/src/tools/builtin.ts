@@ -5,7 +5,7 @@ import { join, dirname, normalize, resolve as resolvePath, relative } from 'node
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import type { ToolResult, Logger } from '@agent-os/shared';
+import type { ToolResult, Logger, PermissionCallback } from '@agent-os-core/shared';
 import type { ToolRegistry } from './registry.js';
 import type { TieredStore } from '../memory/tiered-store.js';
 import type { HAMCompressor } from '../memory/compressor.js';
@@ -589,6 +589,52 @@ async function handleRemember(
   }
 }
 
+// ─── Diff preview helper ──────────────────────────────────────────────────────
+
+function buildEditPreview(filePath: string, oldString: string, newString: string): string {
+  const lines: string[] = [`Edit: ${filePath}`, ''];
+  const removed = oldString.split('\n').slice(0, 6);
+  const added = newString.split('\n').slice(0, 6);
+  for (const line of removed) lines.push(`- ${line}`);
+  for (const line of added) lines.push(`+ ${line}`);
+  if (oldString.split('\n').length > 6 || newString.split('\n').length > 6) {
+    lines.push('  … (truncated)');
+  }
+  return lines.join('\n');
+}
+
+// ─── Session-level permission state ──────────────────────────────────────────
+
+const SESSION_ALWAYS_ALLOW = new Set<string>();
+
+/**
+ * Mutable permission callback — set at runtime by the CLI app after it has a
+ * UI context. Defaults to undefined (auto-allow when no UI is attached).
+ */
+let _permissionCallback: PermissionCallback | undefined;
+
+/** Set or clear the active permission callback (call from CLI App on mount). */
+export function setPermissionCallback(cb: PermissionCallback | undefined): void {
+  _permissionCallback = cb;
+  SESSION_ALWAYS_ALLOW.clear();
+}
+
+async function checkPermission(
+  toolName: string,
+  input: Record<string, unknown>,
+  preview: string,
+): Promise<boolean> {
+  if (!_permissionCallback) return true;
+  if (SESSION_ALWAYS_ALLOW.has(toolName)) return true;
+
+  const decision = await _permissionCallback(toolName, { ...input, _preview: preview });
+  if (decision === 'always') {
+    SESSION_ALWAYS_ALLOW.add(toolName);
+    return true;
+  }
+  return decision === 'allow';
+}
+
 // ─── Registration ─────────────────────────────────────────────────────────────
 
 export function registerBuiltinTools(
@@ -629,7 +675,12 @@ export function registerBuiltinTools(
         required: ['command'],
       },
     },
-    (input) => handleBash(input, logger),
+    async (input) => {
+      const command = typeof input['command'] === 'string' ? input['command'] : '';
+      const allowed = await checkPermission('bash', input, `$ ${command}`);
+      if (!allowed) return { toolCallId: '', content: 'Permission denied by user.', isError: true };
+      return handleBash(input, logger);
+    },
   );
 
   registry.register(
@@ -661,7 +712,14 @@ export function registerBuiltinTools(
         required: ['path', 'content'],
       },
     },
-    (input) => handleWriteFile(input, logger, allowedDirs),
+    async (input) => {
+      const path = typeof input['path'] === 'string' ? input['path'] : '';
+      const content = typeof input['content'] === 'string' ? input['content'] : '';
+      const preview = `Write ${content.split('\n').length} lines to ${path}`;
+      const allowed = await checkPermission('write_file', input, preview);
+      if (!allowed) return { toolCallId: '', content: 'Permission denied by user.', isError: true };
+      return handleWriteFile(input, logger, allowedDirs);
+    },
   );
 
   registry.register(
@@ -725,7 +783,15 @@ export function registerBuiltinTools(
         required: ['file_path', 'old_string', 'new_string'],
       },
     },
-    (input) => handleEdit(input, logger, allowedDirs),
+    async (input) => {
+      const filePath = typeof input['file_path'] === 'string' ? input['file_path'] : '';
+      const oldStr = typeof input['old_string'] === 'string' ? input['old_string'] : '';
+      const newStr = typeof input['new_string'] === 'string' ? input['new_string'] : '';
+      const preview = buildEditPreview(filePath, oldStr, newStr);
+      const allowed = await checkPermission('edit', input, preview);
+      if (!allowed) return { toolCallId: '', content: 'Permission denied by user.', isError: true };
+      return handleEdit(input, logger, allowedDirs);
+    },
   );
 
   registry.register(

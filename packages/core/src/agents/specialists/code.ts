@@ -9,7 +9,7 @@
  */
 
 import type { ClaudeClient } from '../../llm/claude.js';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 
 const SYSTEM_PROMPT = `You are an expert software engineer agent (TypeScript/Node.js specialist, also fluent in Python, Go, Rust).
 
@@ -28,11 +28,12 @@ When explaining code:
 
 export class CodeAgent {
   constructor(
-    private readonly claude: ClaudeClient,
+    private readonly claude: ClaudeClient | null,
     private readonly logger: Logger,
   ) {}
 
   async run(instruction: string): Promise<string> {
+    if (!this.claude) return '[Claude not configured — set ANTHROPIC_API_KEY]';
     const start = Date.now();
     try {
       let output = '';

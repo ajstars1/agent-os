@@ -1,9 +1,11 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Text, useApp, useInput, Static } from 'ink';
-import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor, AgentLoader } from '@agent-os/core';
-import type { LLMProvider } from '@agent-os/shared';
+import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor, AgentLoader } from '@agent-os-core/core';
+import { setPermissionCallback } from '@agent-os-core/core';
+import type { LLMProvider, PermissionDecision } from '@agent-os-core/shared';
 import { isCommand, handleCommand, type CommandContext } from '../commands/index.js';
 import { PromptInput } from './PromptInput.js';
+import { PermissionPrompt } from './PermissionPrompt.js';
 import { MessageItem, type MessageEntry } from './MessageItem.js';
 import { StatusBar } from './StatusBar.js';
 import { renderMarkdown } from './markdown.js';
@@ -23,6 +25,7 @@ interface Props {
   hamCompressor?: HAMCompressor | null;
   agents?: AgentLoader;
   model: string;
+  feedbackStore?: import('@agent-os-core/core').FeedbackStore;
 }
 
 function argPreview(input: Record<string, unknown>): string {
@@ -63,6 +66,7 @@ export function App({
   hamCompressor,
   agents,
   model,
+  feedbackStore,
 }: Props): React.ReactElement {
   const { exit } = useApp();
 
@@ -81,8 +85,41 @@ export function App({
   const [tokenStats, setTokenStats] = useState({ input: 0, output: 0, elapsed: 0 });
   const [history, setHistory] = useState<string[]>([]);
   const [lastUserMessage, setLastUserMessage] = useState('');
+  const [lastAssistantMessage, setLastAssistantMessage] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const startMsRef = useRef(0);
+
+  // ── Permission system ──────────────────────────────────────────────────────
+  const [pendingPermission, setPendingPermission] = useState<{
+    toolName: string;
+    input: Record<string, unknown>;
+    preview: string;
+  } | null>(null);
+  const permissionResolverRef = useRef<((d: PermissionDecision) => void) | null>(null);
+
+  const requestPermission = useCallback(
+    (toolName: string, input: Record<string, unknown>): Promise<PermissionDecision> => {
+      return new Promise<PermissionDecision>((resolve) => {
+        const preview = (typeof input['_preview'] === 'string' ? input['_preview'] : toolName) as string;
+        permissionResolverRef.current = resolve;
+        setPendingPermission({ toolName, input, preview });
+      });
+    },
+    [],
+  );
+
+  const handlePermissionDecision = useCallback((decision: PermissionDecision) => {
+    const resolver = permissionResolverRef.current;
+    permissionResolverRef.current = null;
+    setPendingPermission(null);
+    resolver?.(decision);
+  }, []);
+
+  // Register/unregister permission callback with the tool layer
+  useEffect(() => {
+    setPermissionCallback(requestPermission);
+    return () => { setPermissionCallback(undefined); };
+  }, [requestPermission]);
 
   // Ctrl+C: abort stream if running, else exit
   useInput((input, key) => {
@@ -124,7 +161,7 @@ export function App({
     setMessages((prev) => [...prev, { key, msg: entry }]);
   }, []);
 
-  const handleSubmit = useCallback(async (input: string): Promise<void> => {
+  const handleSubmit = useCallback(async (input: string, _pasteRefs?: unknown[]): Promise<void> => {
     const trimmed = input.trim();
     if (!trimmed) return;
 
@@ -132,6 +169,10 @@ export function App({
       if (h[h.length - 1] === trimmed) return h;
       return [...h, trimmed];
     });
+
+    if (/^(exit|quit|q)$/i.test(trimmed)) {
+      process.exit(0);
+    }
 
     if (isCommand(trimmed)) {
       // Check built-in commands first
@@ -203,6 +244,8 @@ export function App({
         hamStore,
         hamCompressor,
         agents,
+        feedbackStore,
+        lastAssistantMessage,
       };
       addMessage({ type: 'user', text: trimmed });
       try {
@@ -323,6 +366,7 @@ export function App({
 
     if (accumulatedText && !signal.aborted) {
       addMessage({ type: 'assistant', text: accumulatedText, provider: currentProvider });
+      setLastAssistantMessage(accumulatedText);
     }
 
     setStreaming('');
@@ -334,7 +378,7 @@ export function App({
     setStatus('idle');
     setTokenStats((prev) => ({ ...prev, elapsed: Date.now() - startMsRef.current }));
     abortRef.current = null;
-  }, [engine, skills, hamStore, hamCompressor, agents, addMessage]);
+  }, [engine, skills, hamStore, hamCompressor, agents, feedbackStore, lastAssistantMessage, addMessage]);
 
   return (
     <Box flexDirection="column">
@@ -389,6 +433,16 @@ export function App({
         </Box>
       ))}
 
+      {/* Permission prompt — blocks input until user decides */}
+      {pendingPermission && (
+        <PermissionPrompt
+          toolName={pendingPermission.toolName}
+          input={pendingPermission.input}
+          preview={pendingPermission.preview}
+          onDecision={handlePermissionDecision}
+        />
+      )}
+
       {/* Status bar */}
       <StatusBar
         status={status}
@@ -404,8 +458,8 @@ export function App({
 
       {/* Input prompt */}
       <PromptInput
-        onSubmit={(val) => { void handleSubmit(val); }}
-        isDisabled={status !== 'idle'}
+        onSubmit={(val, refs) => { void handleSubmit(val, refs); }}
+        isDisabled={status !== 'idle' || pendingPermission !== null}
         commands={skillNames}
         history={history}
       />

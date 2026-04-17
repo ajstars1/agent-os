@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir as getHomedir } from 'node:os';
 import { watch, type FSWatcher } from 'chokidar';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 import { SkillRecommender } from './recommender.js';
 
 /** Extract the `description` field from YAML frontmatter (first `---` block). */

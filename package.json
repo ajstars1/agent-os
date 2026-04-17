@@ -1,15 +1,25 @@
 {
   "name": "agent-os",
-  "private": true,
+  "version": "0.2.0",
+  "description": "Self-hosted AI agent with persistent memory — CLI, Discord, and web API",
+  "bin": {
+    "aos": "./packages/cli/dist/index.js"
+  },
+  "files": [
+    "packages/cli/dist",
+    "packages/core/dist",
+    "packages/shared/dist"
+  ],
+  "private": false,
   "packageManager": "npm@10.9.2",
   "workspaces": ["packages/*"],
   "scripts": {
     "build": "turbo run build",
     "cli": "node packages/cli/dist/index.js",
-    "dev:cli": "turbo run dev --filter=@agent-os/cli",
-    "dev:discord": "turbo run dev --filter=@agent-os/discord",
-    "dev:web": "turbo run dev --filter=@agent-os/web",
-    "dev:ui": "turbo run dev --filter=@agent-os/ui",
+    "dev:cli": "turbo run dev --filter=@agent-os-core/cli",
+    "dev:discord": "turbo run dev --filter=@agent-os-core/discord",
+    "dev:web": "turbo run dev --filter=@agent-os-core/web",
+    "dev:ui": "turbo run dev --filter=@agent-os-core/ui",
     "dev:engine": "cd packages/engine && poetry run python main.py",
     "engine:install": "cd packages/engine && poetry install",
     "engine:test": "cd packages/engine && poetry run pytest",

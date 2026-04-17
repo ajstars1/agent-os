@@ -10,7 +10,7 @@
 
 import type { GeminiClient } from '../../llm/gemini.js';
 import type { ClaudeClient } from '../../llm/claude.js';
-import type { Logger } from '@agent-os/shared';
+import type { Logger } from '@agent-os-core/shared';
 
 const SYSTEM_PROMPT = `You are a planning agent. Turn goals into concrete, actionable plans.
 
@@ -36,7 +36,7 @@ Rules:
 export class PlannerAgent {
   constructor(
     private readonly gemini: GeminiClient | null,
-    private readonly claude: ClaudeClient,
+    private readonly claude: ClaudeClient | null,
     private readonly logger: Logger,
   ) {}
 
@@ -52,7 +52,7 @@ export class PlannerAgent {
         )) {
           if (chunk.type === 'text' && chunk.content) output += chunk.content;
         }
-      } else {
+      } else if (this.claude) {
         for await (const chunk of this.claude.stream(
           [{ role: 'user', content: instruction }],
           SYSTEM_PROMPT,
