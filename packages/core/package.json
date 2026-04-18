@@ -1,6 +1,6 @@
 {
   "name": "@agent-os-core/core",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Core engine, LLM clients, memory, tools, and skills for agent-os.",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-os-core/shared": "0.1.0",
+    "@agent-os-core/shared": "0.1.3",
     "@anthropic-ai/sdk": "^0.40.0",
     "@google/genai": "^1.50.1",
     "@modelcontextprotocol/sdk": "^1.25.3",

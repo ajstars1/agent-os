@@ -61,6 +61,7 @@ export class SkillLoader {
   private cachedContext: string | null = null;
   private skillContents = new Map<string, string>(); // name → full SKILL.md content
   private watcher: FSWatcher | null = null;
+  private hasWarnedENOSPC = false;
   private readonly reloadCallbacks: Array<() => void> = [];
   readonly recommender: SkillRecommender = new SkillRecommender();
 
@@ -197,6 +198,20 @@ export class SkillLoader {
         .catch((err: unknown) => {
           this.logger.error({ err }, 'Skill reload failed');
         });
+    });
+
+    this.watcher.on('error', (err: unknown) => {
+      if ((err as NodeJS.ErrnoException).code === 'ENOSPC') {
+        if (!this.hasWarnedENOSPC) {
+          this.hasWarnedENOSPC = true;
+          this.logger.warn(
+            'System file watcher limit reached (ENOSPC). Hot-reloading is disabled for skills. ' +
+            'To fix this, run: echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p'
+          );
+        }
+      } else {
+        this.logger.warn({ err }, 'Skill watcher error');
+      }
     });
   }
 
