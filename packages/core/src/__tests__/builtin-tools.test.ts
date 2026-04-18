@@ -58,7 +58,7 @@ describe('builtin: read_file', () => {
     const registry = makeRegistry([tmpDir]);
     const result = await registry.callTool('read_file', { path: join(tmpDir, 'test.txt') });
     expect(result.isError).toBe(false);
-    expect(result.content).toBe('hello world');
+    expect(result.content).toBe('1 | hello world');
   });
 
   it('allows all paths when allowedDirs is empty', async () => {
@@ -69,7 +69,7 @@ describe('builtin: read_file', () => {
     const registry = makeRegistry([]);
     const result = await registry.callTool('read_file', { path: join(tmpDir, 'open.txt') });
     expect(result.isError).toBe(false);
-    expect(result.content).toBe('open content');
+    expect(result.content).toBe('1 | open content');
   });
 });
 

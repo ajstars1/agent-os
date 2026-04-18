@@ -89,7 +89,7 @@ async function handleWebFetch(
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'agent-os/0.2.0' },
+      headers: { 'User-Agent': 'agent-os/0.2.1' },
     });
     clearTimeout(timer);
 

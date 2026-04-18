@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "agent-os-engine"
-version = "0.1.0"
+version = "0.1.1"
 description = "Custom PyTorch-based neural engine for AgentOS"
 authors = ["AgentOS Team"]
 readme = "README.md"
