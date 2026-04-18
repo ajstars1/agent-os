@@ -367,8 +367,10 @@ export const commands: Record<
     //   3. npm/bun global package (`npm install -g agent-os`)
     const devRoot = findDevMonorepoRoot();
     const legacySrc = join(homedir(), '.agent-os-src');
-    const hasBun = (() => { try { execSync('bun --version', { stdio: 'pipe' }); return true; } catch { return false; } })();
-    const pkgInstall = hasBun ? 'bun install --silent' : 'npm install --silent --no-audit --no-fund';
+    const bunPath = join(homedir(), '.bun/bin/bun');
+    const hasBun = existsSync(bunPath) || (() => { try { execSync('bun --version', { stdio: 'pipe' }); return true; } catch { return false; } })();
+    const bunCmd = existsSync(bunPath) ? bunPath : 'bun';
+    const pkgInstall = `${bunCmd} install --silent`;
 
     const srcDir = devRoot ?? (existsSync(legacySrc) ? legacySrc : null);
 
@@ -392,13 +394,13 @@ export const commands: Record<
       }
       try {
         execSync(pkgInstall, { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
-        lines.push(`✓ workspace deps synced (${hasBun ? 'bun' : 'npm'})`);
+        lines.push('✓ workspace deps synced (bun)');
       } catch (err) {
         const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
         lines.push(`⚠ install warnings — ${msg}`);
       }
       try {
-        execSync(hasBun ? 'bun run build' : 'npm run build', { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
+        execSync(`${bunCmd} run build`, { cwd: srcDir, stdio: ['pipe', 'pipe', 'pipe'] });
         lines.push('✓ build complete');
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
