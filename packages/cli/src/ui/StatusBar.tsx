@@ -12,6 +12,7 @@ interface Props {
   activeStartMs: number;           // non-zero when a request is in-flight
   cwd: string;
   skillSuggestions?: string[];
+  isPlanning?: boolean;
 }
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -53,6 +54,7 @@ export function StatusBar({
   activeStartMs,
   cwd,
   skillSuggestions = [],
+  isPlanning = false,
 }: Props): React.ReactElement {
   const isActive = status !== 'idle';
   const spinnerFrame = useSpinner(isActive);
@@ -95,6 +97,16 @@ export function StatusBar({
           </Box>
         )}
       </Box>
+      {isPlanning && (
+        <Box paddingX={1} marginTop={1} borderStyle="bold" borderColor="yellow">
+          <Text color="yellow" bold inverse> PLANNING MODE </Text>
+          <Text color="yellow">  Review the proposed plan and type </Text>
+          <Text color="green" bold>"Approve"</Text>
+          <Text color="yellow"> to proceed or </Text>
+          <Text color="red" bold>"Reject"</Text>
+          <Text color="yellow"> to cancel.</Text>
+        </Box>
+      )}
     </Box>
   );
 }

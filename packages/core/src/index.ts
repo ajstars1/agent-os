@@ -63,6 +63,7 @@ import { ToolRegistry } from './tools/registry.js';
 import { AgentEngine } from './engine.js';
 import { AgentLoader } from './agents/loader.js';
 import { registerBuiltinTools } from './tools/builtin.js';
+import { registerTaskTools } from './tools/tasktools.js';
 import { createLogger } from '@agent-os-core/shared';
 import { NeuralClient } from './memory/neural-client.js';
 import { LearnerClient } from './memory/learner-client.js';
@@ -170,6 +171,8 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
     learnerTopics,          // pre-loaded hot topics from bg learner
     feedbackStore,
   );
+
+  registerTaskTools(tools, engine.planningManager, engine.taskRegistry, logger);
 
   return { engine, memory, skills, tools, agents, hamStore, hamCompressor, episodicStore, userProfileStore, learnerClient, feedbackStore };
 }

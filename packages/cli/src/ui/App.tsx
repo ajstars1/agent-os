@@ -454,6 +454,7 @@ export function App({
         activeStartMs={startMsRef.current}
         cwd={process.cwd()}
         skillSuggestions={statusBarSuggestions}
+        isPlanning={engine.planningManager.getMode() === 'plan'}
       />
 
       {/* Input prompt */}

@@ -66,6 +66,11 @@ const HELP_TEXT = `Available commands:
   /memory add <topic> <content>   Store knowledge
   /feedback <text>                Save feedback to improve future responses
   /feedback list                  Show saved feedback entries
+  /plan <task>                    Enter Planning Mode for a complex task
+  /task list                      Show subtasks for the current plan
+  /task done <subtask_id>         Mark a subtask as completed
+  /status                         Show agent health and memory stats
+  /mcp                            List active MCP servers
   /export [filename]              Export conversation to markdown
   /cd <path>                      Change working directory
   /cwd                            Print current working directory
@@ -358,6 +363,41 @@ export const commands: Record<
     ctx.feedbackStore.add(sub, context, history);
     const turnNote = history.length > 0 ? ` (captured last ${history.length} turns)` : '';
     return `Feedback saved${turnNote}. It will be applied during the next sleep cycle.`;
+  },
+  
+  plan: (args, ctx) => {
+    if (!args.trim()) return 'Usage: /plan <task description>';
+    const task = ctx.engine.planningManager.enterPlanMode(args, ['Initial analysis', 'Implementation', 'Verification']);
+    return `Entered Planning Mode for: ${task.title}\n\nTasks:\n${task.subtasks.map(s => `  [ ] ${s.title} (${s.id.slice(0, 4)})`).join('\n')}\n\nType "Approve" to start or "Reject" to cancel.`;
+  },
+
+  task: (args, ctx) => {
+    const [subCmd, id] = args.trim().split(/\s+/);
+    if (subCmd === 'list') {
+      const plan = ctx.engine.planningManager.getCurrentPlan();
+      if (!plan) return 'No active plan. Use /plan to start one.';
+      return `Current Plan: ${plan.title}\n\n${plan.subtasks.map(s => `  [${s.status === 'completed' ? 'x' : ' '}] ${s.title} (${s.id.slice(0, 4)})`).join('\n')}`;
+    }
+    if (subCmd === 'done') {
+      const plan = ctx.engine.planningManager.getCurrentPlan();
+      if (!plan || !id) return 'Usage: /task done <id>';
+      const subtask = plan.subtasks.find(s => s.id.startsWith(id));
+      if (!subtask) return `Subtask ${id} not found.`;
+      ctx.engine.taskRegistry.updateSubtaskStatus(plan.id, subtask.id, 'completed');
+      return `Marked subtask "${subtask.title}" as done.`;
+    }
+    return 'Usage: /task <list|done>';
+  },
+
+  status: (_args, ctx) => {
+    const memory = ctx.hamStore ? `${ctx.hamStore.getAllL0().length} topics` : 'Off';
+    const mode = ctx.engine.planningManager.getMode().toUpperCase();
+    return `AgentOS Status:\n  Mode:     ${mode}\n  Memory:   ${memory}\n  Conversation: ${ctx.conversationId.slice(0, 8)}`;
+  },
+
+  mcp: () => {
+    // Basic placeholder for MCP command
+    return 'Active MCP Servers: (builtin, file-system, web-search)';
   },
 
   update: () => {

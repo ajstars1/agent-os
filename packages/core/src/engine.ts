@@ -27,6 +27,7 @@ import { buildContext } from './memory/context-builder.js';
 import { Orchestrator } from './agents/orchestrator.js';
 import type { FeedbackStore } from './memory/feedback-store.js';
 import { ToolExecutor } from './agents/tool-executor.js';
+import { PlanningManager, TaskRegistry } from './planning.js';
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -106,6 +107,8 @@ export class AgentEngine {
   private readonly _semanticGraph: SemanticGraph;
   private readonly _orchestrator: Orchestrator;
   private readonly _toolExecutor?: ToolExecutor;
+  public readonly planningManager: PlanningManager;
+  public readonly taskRegistry: TaskRegistry;
 
   constructor(
     private readonly config: Config,
@@ -131,6 +134,9 @@ export class AgentEngine {
     if (claude) {
       this._toolExecutor = new ToolExecutor(claude, tools, logger);
     }
+
+    this.taskRegistry = new TaskRegistry();
+    this.planningManager = new PlanningManager(this.taskRegistry, logger);
 
     this._semanticGraph = semanticGraph ?? new SemanticGraph({
       llm: {
@@ -358,6 +364,22 @@ export class AgentEngine {
     // Reset the idle timer on every user message so the sleep cycle only fires
     // after a genuine period of inactivity.
     this.resetIdleTimer(input.conversationId);
+
+    // If in Planning Mode, check for approval/rejection keywords
+    if (this.planningManager.getMode() === 'plan') {
+      const lower = input.message.toLowerCase().trim();
+      if (lower === 'approve' || lower === 'yes' || lower === 'ok' || lower === 'do it') {
+        this.planningManager.approvePlan();
+        yield { type: 'status', content: 'Plan approved. Starting execution...' };
+      } else if (lower === 'reject' || lower === 'no' || lower === 'cancel') {
+        this.planningManager.rejectPlan();
+        yield { type: 'status', content: 'Plan rejected. Returning to chat.' };
+        return;
+      } else {
+        yield { type: 'text', content: 'We are currently in Planning Mode. Please "Approve" the plan to proceed or "Reject" to cancel.' };
+        return;
+      }
+    }
 
     const cleanedMessage = this.router.stripPrefix(input.message);
     const parsedModel = this.router.parseForceModel((input.forceModel ?? input.agentProfile?.defaultModel) as string | undefined);
