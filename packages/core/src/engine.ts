@@ -12,8 +12,9 @@ import type { IMemoryStore } from './memory/interface.js';
 import type { SkillLoader } from './skills/loader.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { ClaudeClient } from './llm/claude.js';
-import type { GeminiClient, GeminiMessage, GeminiVariant } from './llm/gemini.js';
+import type { GeminiClient, GeminiVariant } from './llm/gemini.js';
 import type { LLMRouter } from './llm/router.js';
+import type { UnifiedMessage } from './llm/base.js';
 import type { Logger } from '@agent-os-core/shared';
 import type { AgentProfile } from './agents/types.js';
 import type { HAMRetriever } from './memory/retriever.js';
@@ -131,8 +132,12 @@ export class AgentEngine {
     private readonly feedbackStore?: FeedbackStore,
   ) {
     this._orchestrator = new Orchestrator(claude, gemini, episodicStore, logger, tools);
+    
+    // ToolExecutor is now generalized — we can create it dynamically or keep one for each
     if (claude) {
       this._toolExecutor = new ToolExecutor(claude, tools, logger);
+    } else if (gemini) {
+      this._toolExecutor = new ToolExecutor(gemini, tools, logger);
     }
 
     this.taskRegistry = new TaskRegistry();
@@ -141,9 +146,6 @@ export class AgentEngine {
     this._semanticGraph = semanticGraph ?? new SemanticGraph({
       llm: {
         complete: async (systemPrompt: string, userPrompt: string) => {
-          // Respect the configured default model so internal calls (SemanticGraph,
-          // sleep-cycle) don't silently fall back to Claude when the user is in
-          // Gemini mode.  Only route dynamically when the default is 'auto'.
           const useGemini =
             gemini !== null &&
             (config.DEFAULT_MODEL === 'gemini' ||
@@ -151,7 +153,7 @@ export class AgentEngine {
 
           let text = '';
           if (useGemini && gemini) {
-            for await (const chunk of gemini.stream([{ role: 'user', parts: [{ text: userPrompt }] }], systemPrompt)) {
+            for await (const chunk of gemini.stream([{ role: 'user', content: userPrompt }], systemPrompt)) {
               if (chunk.type === 'text' && chunk.content) text += chunk.content;
             }
           } else if (claude) {
@@ -162,6 +164,27 @@ export class AgentEngine {
           return text;
         }
       }
+    });
+
+    // Register planning tools
+    this.tools.register({
+      name: 'propose_plan',
+      description: 'Propose an implementation plan for a complex task. This will enter Planning Mode and wait for user approval.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Clear title for the implementation plan' },
+          steps: { type: 'array', items: { type: 'string' }, description: 'Detailed steps of the plan' },
+        },
+        required: ['title', 'steps'],
+      },
+    }, async (input) => {
+      const plan = this.planningManager.enterPlanMode(input.title as string, input.steps as string[]);
+      return {
+        toolCallId: '',
+        content: `Plan proposed: "${plan.title}" with ${plan.subtasks.length} steps. Waiting for user approval (type "Approve" or "Reject").`,
+        isError: false,
+      };
     });
   }
 
@@ -412,7 +435,15 @@ export class AgentEngine {
     const hamResult = await this.hamRetriever?.retrieve(cleanedMessage, history, input.conversationId);
 
     // ── Companion context (profile + episodic + semantic) ──────────────────
-    const CORE_SYSTEM_PROMPT = `You are the cognitive generator for AgentOS — a personal AI companion, not a generic assistant. You remember who the user is, what they're building, and what has happened between you. When provided with companion memory below, treat it as verified personal context and reference it naturally. Use first-person pronouns (I/me/my) as referring to the user, not yourself.`;
+    const CORE_SYSTEM_PROMPT = `You are the cognitive generator for AgentOS — a personal AI companion, not a generic assistant. You remember who the user is, what they're building, and what has happened between you. When provided with companion memory below, treat it as verified personal context and reference it naturally. Use first-person pronouns (I/me/my) as referring to the user, not yourself.
+
+Current working directory: ${process.cwd()}
+
+When working with files:
+- Always use absolute paths with the read_file, write_file, and edit tools
+- Use read_file before editing any existing file — the edit tool requires it
+- Use glob or grep to find files when you don't know the exact path
+- Prefer edit over write_file for modifying existing files`;
     const baseContext = this.skills.getSystemContext();
 
     let companionBlock = '';
@@ -515,34 +546,37 @@ export class AgentEngine {
     }
 
     if (!orchestratorHandled) {
-      if (provider === 'claude' && this._toolExecutor) {
-        const messages: MessageParam[] = history
-          .slice(0, -1) // exclude last user message
+      const client = provider === 'gemini' ? this.gemini : this.claude;
+      if (client) {
+        const executor = new ToolExecutor(client, this.tools, this.logger);
+        const unifiedMessages: UnifiedMessage[] = history
+          .slice(0, -1)
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m) => ({
             role: m.role as 'user' | 'assistant',
             content: m.content,
           }));
-        messages.push({ role: 'user', content: cleanedMessage });
-        
+        unifiedMessages.push({ role: 'user', content: cleanedMessage });
+
         yield* collectChunks(
-          this._toolExecutor.runLoop(
+          executor.runLoop(
             systemPrompt,
-            messages,
+            unifiedMessages,
             toolDefs,
             (text, tokens) => {
               this.memory.addMessage(input.conversationId, {
                 conversationId: input.conversationId,
                 role: 'assistant',
                 content: text,
-                model: 'claude',
+                model: provider,
                 tokens,
               });
-            }
+            },
+            provider === 'gemini' ? { variant: geminiVariant, useSearch: input.useSearch } : {}
           )
         );
       } else {
-        yield* collectChunks(this.geminiStream(input.conversationId, history, systemPrompt, cleanedMessage, geminiVariant, input.useSearch));
+        yield { type: 'error', content: `${provider} client not configured.` };
       }
     }
 
@@ -607,54 +641,17 @@ export class AgentEngine {
     variant?: GeminiVariant,
     useSearch?: boolean,
   ): AsyncGenerator<StreamChunk> {
-    if (!this.gemini) {
-      yield { type: 'text', content: 'Gemini client not configured.' };
-      yield { type: 'done' };
-      return;
+    // This method is now effectively deprecated as chat() handles both providers
+    // via ToolExecutor. We'll leave a stub or remove if unused elsewhere.
+    if (!this.gemini) return;
+    
+    for await (const chunk of this.gemini.stream(
+      [{ role: 'user', content: lastUserMessage }],
+      systemPrompt,
+      [],
+      { variant }
+    )) {
+      yield chunk;
     }
-
-    const geminiMessages: GeminiMessage[] = history
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }));
-
-    // Ensure last message is the current user input
-    if (geminiMessages.length === 0 || geminiMessages[geminiMessages.length - 1]?.role !== 'user') {
-      geminiMessages.push({ role: 'user', parts: [{ text: lastUserMessage }] });
-    }
-
-    let fullText = '';
-    let lastUsage = { inputTokens: 0, outputTokens: 0 };
-
-    // Use search grounding when explicitly requested (ask command, research tasks)
-    const stream = useSearch
-      ? this.gemini.streamSearch(lastUserMessage, systemPrompt)
-      : this.gemini.stream(geminiMessages, systemPrompt, variant ?? 'flash');
-
-    for await (const chunk of stream) {
-      if (chunk.type === 'text' && chunk.content) {
-        fullText += chunk.content;
-        yield chunk;
-      } else if (chunk.type === 'usage' && chunk.usage) {
-        lastUsage = chunk.usage;
-        yield chunk;
-      } else if (chunk.type === 'done') {
-        break;
-      }
-    }
-
-    if (fullText) {
-      this.memory.addMessage(conversationId, {
-        conversationId,
-        role: 'assistant',
-        content: fullText,
-        model: 'gemini',
-        tokens: lastUsage.inputTokens + lastUsage.outputTokens,
-      });
-    }
-
-    yield { type: 'done' };
   }
 }

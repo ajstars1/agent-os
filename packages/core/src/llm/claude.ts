@@ -1,8 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js';
 import type { StreamChunk, ToolDefinition, ToolCall } from '@agent-os-core/shared';
+import type { LLMClient, UnifiedMessage } from './base.js';
 
-export class ClaudeClient {
+export class ClaudeClient implements LLMClient {
   private readonly client: Anthropic;
 
   constructor(apiKey?: string) {
@@ -10,10 +11,28 @@ export class ClaudeClient {
   }
 
   async *stream(
-    messages: MessageParam[],
+    messages: UnifiedMessage[],
     systemPrompt: string,
     tools?: ToolDefinition[],
   ): AsyncGenerator<StreamChunk> {
+    const anthropicMessages: MessageParam[] = messages.map(m => {
+      if (typeof m.content === 'string') {
+        return {
+          role: m.role === 'system' ? 'user' : m.role as 'user' | 'assistant',
+          content: m.content
+        };
+      }
+      return {
+        role: m.role === 'system' ? 'user' : m.role as 'user' | 'assistant',
+        content: m.content.map(c => {
+          if (c.type === 'text') return { type: 'text', text: c.text };
+          if (c.type === 'tool_call') return { type: 'tool_use', id: c.id, name: c.name, input: c.input };
+          if (c.type === 'tool_result') return { type: 'tool_result', tool_use_id: c.toolCallId, content: c.content, is_error: c.isError };
+          return { type: 'text', text: '' };
+        }) as any
+      };
+    });
+
     const anthropicTools: Anthropic.Tool[] | undefined = tools?.map((t) => ({
       name: t.name,
       description: t.description,
@@ -24,7 +43,7 @@ export class ClaudeClient {
       model: 'claude-sonnet-4-5',
       max_tokens: 8192,
       system: systemPrompt,
-      messages,
+      messages: anthropicMessages,
       ...(anthropicTools && anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
     });
 

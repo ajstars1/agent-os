@@ -727,7 +727,12 @@ export function registerBuiltinTools(
     {
       name: 'bash',
       description:
-        'Run a shell command in the current working directory with full PATH. Returns stdout and stderr combined.',
+        `Run a shell command. Returns stdout and stderr combined. The working directory is ${process.cwd()}.
+
+Usage:
+- Prefer dedicated tools (read_file, edit, glob, grep) over bash when they fit — bash is for shell-only operations like running builds, git commands, or installing packages.
+- Do not run interactive commands (those that require user input).
+- For file reading/editing always use read_file and edit instead of cat/sed/awk.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -748,13 +753,20 @@ export function registerBuiltinTools(
   registry.register(
     {
       name: 'read_file',
-      description: 'Read a file from the local filesystem. Returns UTF-8 text content prefixed with line numbers. Use offset and limit to read chunks of large files.',
+      description: `Read a file from the local filesystem. You can access any file directly by using this tool. Assume this tool is able to read all files on the machine.
+
+Usage:
+- The path parameter must be an absolute path, not a relative path
+- By default, it reads up to 2000 lines starting from the beginning of the file
+- When you already know which part of the file you need, only read that part using offset and limit
+- Results are returned using cat -n format, with line numbers starting at 1
+- You MUST read a file with this tool before using the edit tool on it`,
       inputSchema: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Absolute or ~ path to the file' },
+          path: { type: 'string', description: 'Absolute path to the file (must not be relative)' },
           offset: { type: 'number', description: 'Line number to start reading from (1-indexed)' },
-          limit: { type: 'number', description: 'Maximum number of lines to read (up to 3000)' },
+          limit: { type: 'number', description: 'Maximum number of lines to read (up to 2000)' },
           maxBytes: { type: 'number', description: 'Max bytes to read (default 65536)', default: 65536 },
         },
         required: ['path'],
@@ -766,11 +778,18 @@ export function registerBuiltinTools(
   registry.register(
     {
       name: 'write_file',
-      description: 'Write text content to a file. Creates parent directories if needed.',
+      description: `Write a file to the local filesystem.
+
+Usage:
+- This tool will overwrite the existing file if there is one at the provided path
+- If this is an existing file, you MUST use the read_file tool first to read the file's contents. This tool will fail if you did not read the file first.
+- Prefer the edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
+- NEVER create documentation files (*.md) or README files unless explicitly requested by the user.
+- The path must be absolute.`,
       inputSchema: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Absolute or ~ path to write to' },
+          path: { type: 'string', description: 'Absolute path to write to' },
           content: { type: 'string', description: 'Text content to write' },
         },
         required: ['path', 'content'],
@@ -834,13 +853,20 @@ export function registerBuiltinTools(
   registry.register(
     {
       name: 'edit',
-      description:
-        'Precise string replacement in a file. Errors if old_string is ambiguous (appears more than once) unless replace_all is set.',
+      description: `Performs exact string replacements in files.
+
+Usage:
+- You MUST use read_file at least once in the conversation before editing a file. This tool will error if you attempt an edit without reading the file.
+- When editing text from read_file output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance of old_string.
+- Use replace_all for replacing and renaming strings across the file.
+- file_path must be an absolute path.`,
       inputSchema: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: 'Absolute or ~ path to the file' },
-          old_string: { type: 'string', description: 'Exact string to find and replace' },
+          file_path: { type: 'string', description: 'Absolute path to the file' },
+          old_string: { type: 'string', description: 'Exact string to find and replace (must be unique in file unless replace_all is set)' },
           new_string: { type: 'string', description: 'Replacement string' },
           replace_all: { type: 'boolean', description: 'Replace all occurrences (default false)', default: false },
         },

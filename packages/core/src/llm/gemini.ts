@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import type { StreamChunk } from '@agent-os-core/shared';
+import type { LLMClient, UnifiedMessage } from './base.js';
 
 export type GeminiVariant =
   | 'flash'
@@ -21,7 +22,7 @@ export type GeminiMessage = {
   parts: Array<{ text: string }>;
 };
 
-export class GeminiClient {
+export class GeminiClient implements LLMClient {
   private readonly ai: GoogleGenAI;
 
   constructor(apiKey: string) {
@@ -29,28 +30,67 @@ export class GeminiClient {
   }
 
   async *stream(
-    messages: GeminiMessage[],
+    messages: UnifiedMessage[],
     systemPrompt: string,
-    variant: GeminiVariant = 'flash',
+    tools?: import('@agent-os-core/shared').ToolDefinition[],
+    options?: Record<string, any>,
   ): AsyncGenerator<StreamChunk> {
+    const variant = (options?.variant as GeminiVariant) ?? 'flash';
     const modelId = GEMINI_MODEL_IDS[variant];
+
+    const geminiTools: any[] = [];
+    if (tools && tools.length > 0) {
+      geminiTools.push({
+        functionDeclarations: tools.map(t => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema as any
+        }))
+      });
+    }
+    if (options?.useSearch) {
+      geminiTools.push({ googleSearch: {} });
+    }
 
     const stream = await this.ai.models.generateContentStream({
       model: modelId,
-      contents: messages.map((m) => ({ role: m.role, parts: m.parts })),
-      config: { systemInstruction: systemPrompt },
+      contents: messages.map((m) => {
+        const role = m.role === 'assistant' ? 'model' : 'user';
+        if (typeof m.content === 'string') {
+          return { role, parts: [{ text: m.content }] };
+        }
+        return {
+          role,
+          parts: m.content.map(c => {
+            if (c.type === 'text') return { text: c.text };
+            if (c.type === 'tool_call') return { functionCall: { name: c.name, args: c.input } };
+            if (c.type === 'tool_result') return { functionResponse: { name: c.name, response: { content: c.content } } };
+            return { text: '' };
+          }) as any
+        };
+      }),
+      config: { 
+        systemInstruction: systemPrompt,
+        tools: geminiTools.length > 0 ? geminiTools : undefined
+      },
     });
 
     let lastResponse = null;
 
     for await (const chunk of stream) {
-      // Thinking parts (2.5 models emit thought: true parts)
+      // Thinking parts and function calls
       const parts = chunk.candidates?.[0]?.content?.parts ?? [];
       for (const part of parts) {
-        if (!('text' in part) || !part.text) continue;
-        const raw = part as { text: string; thought?: boolean };
-        if (raw.thought) {
+        const raw = part as { text?: string; thought?: boolean; functionCall?: { name: string; args: any } };
+        if (raw.thought && raw.text) {
           yield { type: 'thinking', content: raw.text };
+        } else if (raw.functionCall) {
+          const tc: import('@agent-os-core/shared').ToolCall = {
+            id: `call_${Math.random().toString(36).slice(2, 11)}`,
+            name: raw.functionCall.name,
+            input: raw.functionCall.args as Record<string, unknown>
+          };
+          yield { type: 'tool_call', toolCall: tc };
         }
       }
 

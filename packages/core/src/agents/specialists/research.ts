@@ -36,9 +36,10 @@ export class ResearchAgent {
       // Fallback: standard stream without search
       let output = '';
       for await (const chunk of this.gemini.stream(
-        [{ role: 'user', parts: [{ text: instruction }] }],
+        [{ role: 'user', content: instruction }],
         SYSTEM_PROMPT,
-        'pro',
+        [],
+        { variant: 'pro' },
       )) {
         if (chunk.type === 'text' && chunk.content) output += chunk.content;
       }

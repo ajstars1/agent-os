@@ -43,58 +43,40 @@ export class PlannerAgent {
     private readonly claude: ClaudeClient | null,
     private readonly tools: ToolRegistry,
     private readonly logger: Logger,
+    private readonly preferredProvider: 'claude' | 'gemini' = 'claude',
   ) {
-    if (claude) {
-      this.executor = new ToolExecutor(claude, tools, logger);
+    const client = preferredProvider === 'gemini' ? gemini : claude;
+    if (client) {
+      this.executor = new ToolExecutor(client, tools, logger);
+    } else if (claude || gemini) {
+      this.executor = new ToolExecutor((claude || gemini)!, tools, logger);
     }
   }
 
   async run(instruction: string): Promise<string> {
     const start = Date.now();
 
-    // 1. If we have Claude and an Executor, run as full autonomous agent
-    if (this.claude && this.executor) {
-      try {
-        // Restrict to read-only tools
-        const readOnlyTools = this.tools.getTools().filter(t => 
-          ['read_file', 'glob', 'grep', 'ls', 'bash', 'web_fetch'].includes(t.name)
-        );
-        
-        const output = await this.executor.runLoopAndReturnString(
-          SYSTEM_PROMPT,
-          [{ role: 'user', content: instruction }],
-          readOnlyTools
-        );
-        
-        const duration = Date.now() - start;
-        this.logger.debug({ duration, chars: output.length }, 'PlannerAgent complete');
-        return output.trim() || '[No plan output]';
-      } catch (err) {
-        this.logger.warn({ err }, 'PlannerAgent tool-loop failed');
-        return `[PlannerAgent failed: ${err instanceof Error ? err.message : String(err)}]`;
-      }
-    }
-    
-    // 2. Fallback to single-shot Gemini (legacy mode for systems without Claude)
-    if (this.gemini) {
-      try {
-        let output = '';
-        for await (const chunk of this.gemini.stream(
-          [{ role: 'user', parts: [{ text: instruction }] }],
-          SYSTEM_PROMPT,
-          'pro'
-        )) {
-          if (chunk.type === 'text' && chunk.content) output += chunk.content;
-        }
-        const duration = Date.now() - start;
-        this.logger.debug({ duration, chars: output.length }, 'PlannerAgent fallback complete');
-        return output.trim() || '[No plan output]';
-      } catch (err) {
-        this.logger.warn({ err }, 'PlannerAgent fallback failed');
-        return `[PlannerAgent fallback failed: ${err instanceof Error ? err.message : String(err)}]`;
-      }
-    }
+    if (!this.executor) return '[No LLM provider configured for Planning]';
 
-    return '[Neither Claude nor Gemini configured for Planning]';
+    try {
+      // Restrict to read-only tools
+      const readOnlyTools = this.tools.getTools().filter(t => 
+        ['read_file', 'glob', 'grep', 'ls', 'bash', 'web_fetch'].includes(t.name)
+      );
+      
+      const output = await this.executor.runLoopAndReturnString(
+        SYSTEM_PROMPT,
+        [{ role: 'user', content: instruction }],
+        readOnlyTools,
+        this.preferredProvider === 'gemini' ? { variant: 'pro' } : {}
+      );
+      
+      const duration = Date.now() - start;
+      this.logger.debug({ duration, chars: output.length }, 'PlannerAgent complete');
+      return output.trim() || '[No plan output]';
+    } catch (err) {
+      this.logger.warn({ err }, 'PlannerAgent failed');
+      return `[PlannerAgent failed: ${err instanceof Error ? err.message : String(err)}]`;
+    }
   }
 }

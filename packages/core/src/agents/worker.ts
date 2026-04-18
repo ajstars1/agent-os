@@ -16,6 +16,8 @@ import type { ClaudeClient } from '../llm/claude.js';
 import type { GeminiClient } from '../llm/gemini.js';
 import type { TaskType } from './task-queue.js';
 import type { Logger } from '@agent-os-core/shared';
+import { ToolExecutor } from './tool-executor.js';
+import type { ToolRegistry } from '../tools/registry.js';
 
 export interface WorkerConfig {
   type: TaskType;
@@ -64,13 +66,24 @@ const SYSTEM_PROMPTS: Record<TaskType, string> = {
 export class WorkerAgent {
   private readonly timeoutMs: number;
 
+  private readonly executor: ToolExecutor | null = null;
+
   constructor(
     private readonly config: WorkerConfig,
     private readonly claude: ClaudeClient | null,
     private readonly gemini: GeminiClient | null,
+    private readonly tools: ToolRegistry,
     private readonly logger: Logger,
   ) {
     this.timeoutMs = config.timeoutMs ?? 90_000;
+    
+    const pref = config.preferredProvider;
+    const client = pref === 'gemini' ? gemini : claude;
+    if (client) {
+      this.executor = new ToolExecutor(client, tools, logger);
+    } else if (claude || gemini) {
+      this.executor = new ToolExecutor((claude || gemini)!, tools, logger);
+    }
   }
 
   async run(instruction: string): Promise<WorkerResult> {
@@ -104,37 +117,16 @@ export class WorkerAgent {
   }
 
   private async execute(instruction: string, systemPrompt: string, type: TaskType): Promise<string> {
-    const pref = this.config.preferredProvider;
+    if (!this.executor) return '[No LLM provider configured for Worker]';
 
-    // Determine LLM: respect user's explicit choice, otherwise auto-route by task type
-    const useGemini = pref === 'gemini'
-      ? !!this.gemini                     // user chose gemini → use if available
-      : pref === 'claude'
-        ? false                            // user chose claude → never gemini
-        : !!(this.gemini && (type === 'research' || type === 'plan' || type === 'general'));
-
-    if (useGemini && this.gemini) {
-      let output = '';
-      for await (const chunk of this.gemini.stream(
-        [{ role: 'user', parts: [{ text: instruction }] }],
-        systemPrompt,
-        'flash',
-      )) {
-        if (chunk.type === 'text' && chunk.content) output += chunk.content;
-      }
-      return output.trim() || '[No output from Gemini worker]';
-    }
-
-    // Claude path
-    if (!this.claude) return '[Claude not configured — set ANTHROPIC_API_KEY]';
-    let output = '';
-    for await (const chunk of this.claude.stream(
-      [{ role: 'user', content: instruction }],
+    const options = this.config.preferredProvider === 'gemini' ? { variant: 'flash' } : {};
+    
+    return this.executor.runLoopAndReturnString(
       systemPrompt,
-    )) {
-      if (chunk.type === 'text' && chunk.content) output += chunk.content;
-    }
-    return output.trim() || '[No output from Claude worker]';
+      [{ role: 'user', content: instruction }],
+      this.tools.getTools(),
+      options
+    );
   }
 
   private timeout(): Promise<never> {

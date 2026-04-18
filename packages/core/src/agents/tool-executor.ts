@@ -1,5 +1,4 @@
-import type { ClaudeClient } from '../llm/claude.js';
-import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js';
+import type { LLMClient, UnifiedMessage } from '../llm/base.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { Logger, ToolResult, StreamChunk, ToolCall } from '@agent-os-core/shared';
 
@@ -7,18 +6,19 @@ const MAX_TOOL_ITERATIONS = 40;
 
 export class ToolExecutor {
   constructor(
-    private readonly claude: ClaudeClient,
+    private readonly client: LLMClient,
     private readonly tools: ToolRegistry,
     private readonly logger: Logger,
   ) {}
 
   public async *runLoop(
     systemPrompt: string,
-    initialMessages: MessageParam[],
+    initialMessages: UnifiedMessage[],
     toolDefs: ReturnType<ToolRegistry['getTools']>,
     onFinalAssistantMessage?: (text: string, tokens: number) => void,
+    options?: Record<string, any>,
   ): AsyncGenerator<StreamChunk> {
-    const messages: MessageParam[] = [...initialMessages];
+    const messages: UnifiedMessage[] = [...initialMessages];
     let iteration = 0;
     let fullAssistantText = '';
     let lastUsage = { inputTokens: 0, outputTokens: 0 };
@@ -27,7 +27,7 @@ export class ToolExecutor {
       const pendingToolCalls: ToolCall[] = [];
       let iterText = '';
 
-      for await (const chunk of this.claude.stream(messages, systemPrompt, toolDefs)) {
+      for await (const chunk of this.client.stream(messages, systemPrompt, toolDefs, options)) {
         if (chunk.type === 'text' && chunk.content) {
           iterText += chunk.content;
           yield chunk;
@@ -57,20 +57,23 @@ export class ToolExecutor {
         yield { type: 'tool_result', toolResult: result };
       }
 
-      const assistantContent: MessageParam['content'] = [];
+      const assistantContent: UnifiedMessage['content'] = [];
       if (iterText) assistantContent.push({ type: 'text', text: iterText });
       for (const tc of pendingToolCalls) {
-        assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
+        assistantContent.push({ type: 'tool_call', id: tc.id, name: tc.name, input: tc.input });
       }
       messages.push({ role: 'assistant', content: assistantContent });
 
-      const toolResultContent = toolResults.map((r) => ({
-        type: 'tool_result' as const,
-        tool_use_id: r.toolCallId,
-        content: r.content,
-        ...(r.isError ? { is_error: true } : {}),
-      }));
-      messages.push({ role: 'user', content: toolResultContent });
+      messages.push({
+        role: 'user',
+        content: toolResults.map((r) => ({
+          type: 'tool_result',
+          toolCallId: r.toolCallId,
+          name: pendingToolCalls.find(tc => tc.id === r.toolCallId)?.name ?? '',
+          content: r.content,
+          isError: r.isError,
+        })),
+      });
 
       iteration++;
     }
@@ -90,13 +93,23 @@ export class ToolExecutor {
    * Helper that runs the loop to completion and returns the final concatenated string.
    * Useful for Specialist Agents.
    */
+  public async *runLoopAndReturnChunks(
+    systemPrompt: string,
+    initialMessages: UnifiedMessage[],
+    toolDefs: ReturnType<ToolRegistry['getTools']>,
+    options?: Record<string, any>,
+  ): AsyncGenerator<StreamChunk> {
+    yield* this.runLoop(systemPrompt, initialMessages, toolDefs, undefined, options);
+  }
+
   public async runLoopAndReturnString(
     systemPrompt: string,
-    initialMessages: MessageParam[],
+    initialMessages: UnifiedMessage[],
     toolDefs: ReturnType<ToolRegistry['getTools']>,
+    options?: Record<string, any>,
   ): Promise<string> {
     let output = '';
-    for await (const chunk of this.runLoop(systemPrompt, initialMessages, toolDefs)) {
+    for await (const chunk of this.runLoop(systemPrompt, initialMessages, toolDefs, undefined, options)) {
       if (chunk.type === 'text' && chunk.content) {
         output += chunk.content;
       }

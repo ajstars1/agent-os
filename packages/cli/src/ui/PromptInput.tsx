@@ -86,14 +86,15 @@ function computeLayout(buffer: string, cursor: number, width: number): Layout {
   const visualLines: VisualLine[] = [];
   const logicalLines = buffer.split('\n');
   let abs = 0;
+  const safeWidth = Math.max(1, width);
   for (let li = 0; li < logicalLines.length; li++) {
     const logical = logicalLines[li] ?? '';
     if (logical.length === 0) {
       visualLines.push({ text: '', absStart: abs, logicalLineIdx: li, wrapIdx: 0 });
     } else {
-      for (let i = 0, wi = 0; i < logical.length; i += width, wi++) {
+      for (let i = 0, wi = 0; i < logical.length; i += safeWidth, wi++) {
         visualLines.push({
-          text: logical.slice(i, i + width),
+          text: logical.slice(i, i + safeWidth),
           absStart: abs + i,
           logicalLineIdx: li,
           wrapIdx: wi,

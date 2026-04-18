@@ -250,6 +250,12 @@ function printBanner(opts: {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+// Prevent unhandled promise rejections from crashing the process
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  process.stderr.write(`\n[agent-os] Unhandled rejection: ${msg}\n`);
+});
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
 

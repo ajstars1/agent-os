@@ -184,7 +184,7 @@ export class Orchestrator {
       if (preferredProvider) {
         const worker = new WorkerAgent(
           { type: task.type, preferredProvider },
-          this.claude, this.gemini, this.logger,
+          this.claude, this.gemini, this.tools, this.logger,
         );
         return worker.run(task.instruction);
       }
@@ -194,14 +194,14 @@ export class Orchestrator {
         const agent = new ResearchAgent(this.gemini, this.logger);
         output = await agent.run(task.instruction);
       } else if (task.type === 'code') {
-        const agent = new CodeAgent(this.claude, this.tools, this.logger);
+        const agent = new CodeAgent(this.claude, this.gemini, this.tools, this.logger, preferredProvider);
         output = await agent.run(task.instruction);
       } else if (task.type === 'plan') {
-        const agent = new PlannerAgent(this.gemini, this.claude, this.tools, this.logger);
+        const agent = new PlannerAgent(this.gemini, this.claude, this.tools, this.logger, preferredProvider);
         output = await agent.run(task.instruction);
       } else {
         // General or fallback — generic worker
-        const worker = new WorkerAgent({ type: task.type }, this.claude, this.gemini, this.logger);
+        const worker = new WorkerAgent({ type: task.type }, this.claude, this.gemini, this.tools, this.logger);
         return worker.run(task.instruction);
       }
 
@@ -298,9 +298,10 @@ export class Orchestrator {
     let text = '';
     if (useGemini && this.gemini) {
       for await (const chunk of this.gemini.stream(
-        [{ role: 'user', parts: [{ text: prompt }] }],
+        [{ role: 'user', content: prompt }],
         systemPrompt,
-        geminiVariant,
+        [],
+        { variant: geminiVariant },
       )) {
         if (chunk.type === 'text' && chunk.content) text += chunk.content;
       }
