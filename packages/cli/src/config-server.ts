@@ -89,17 +89,24 @@ function broadcastConfig(): void {
 function buildHtml(env: Record<string, string>): string {
   const rows = KNOWN_KEYS.map(({ key, label, secret, description }) => {
     const val = env[key] ?? '';
-    const display = secret && val ? '••••••••' : val;
     const inputType = secret ? 'password' : 'text';
+    const placeholder = secret
+      ? (val ? '(currently set — enter new value to change)' : '(not set)')
+      : '(not set)';
+    const badge = secret
+      ? `<span id="badge-${key}" class="key-badge ${val ? 'set' : 'unset'}">${val ? 'set' : 'not set'}</span>`
+      : '';
     return `
     <tr>
       <td class="key">
         <label for="field-${key}">${label}</label>
         <div class="desc">${description}</div>
+        ${badge}
       </td>
       <td class="val">
         <input id="field-${key}" name="${key}" type="${inputType}"
-          value="${display}" placeholder="(not set)"
+          value="${secret ? '' : val}" placeholder="${placeholder}"
+          data-placeholder="${placeholder}"
           autocomplete="off" spellcheck="false" />
       </td>
     </tr>`;
@@ -192,6 +199,28 @@ function buildHtml(env: Record<string, string>): string {
   }
   input:focus { border-color: #58a6ff; }
   input::placeholder { color: #484f58; }
+  .key-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    margin-top: 0.3rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+  .key-badge.set { background: #0d4c1f; color: #3fb950; border: 1px solid #1f6b2e; }
+  .key-badge.unset { background: #3d1a1a; color: #f85149; border: 1px solid #6b1f1f; }
+  .restart-notice {
+    display: none;
+    background: #2d2200;
+    border: 1px solid #6b4f00;
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    color: #e3a400;
+    font-size: 0.8rem;
+    margin-top: 1rem;
+  }
+  .restart-notice.visible { display: block; }
   .actions {
     margin-top: 1.5rem;
     display: flex;
@@ -248,6 +277,9 @@ function buildHtml(env: Record<string, string>): string {
     <button type="button" class="secondary" onclick="reloadFromServer()">Reload from Disk</button>
     <span id="toast"></span>
   </div>
+  <div class="restart-notice" id="restart-notice">
+    ⚠ API key changed — restart <code>aos</code> for it to take effect.
+  </div>
 </form>
 
 <script>
@@ -278,10 +310,26 @@ function buildHtml(env: Record<string, string>): string {
   }
   connect();
 
+  const SECRET_KEYS = new Set(['ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'DISCORD_TOKEN']);
+
   function applyConfig(data) {
     for (const [key, val] of Object.entries(data)) {
       const el = document.getElementById('field-' + key);
-      if (el && el.type !== 'password') el.value = val;
+      if (!el) continue;
+      if (el.type === 'password') {
+        // Never show the value; update placeholder to reflect set/not-set state
+        const badge = document.getElementById('badge-' + key);
+        if (badge) {
+          badge.textContent = val ? 'set' : 'not set';
+          badge.className = 'key-badge ' + (val ? 'set' : 'unset');
+        }
+        if (!el.value || el.value === el.dataset.placeholder) {
+          el.placeholder = val ? '(currently set — enter new value to change)' : '(not set)';
+          el.dataset.placeholder = el.placeholder;
+        }
+      } else {
+        el.value = val;
+      }
     }
   }
 
@@ -292,12 +340,21 @@ function buildHtml(env: Record<string, string>): string {
     setTimeout(() => { t.className = ''; }, 3000);
   }
 
+  const SECRET_FIELDS = new Set(['ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'DISCORD_TOKEN']);
+
   document.getElementById('config-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
     const updates = {};
+    let changedSecret = false;
     for (const el of form.querySelectorAll('input[name]')) {
-      if (el.type !== 'password' || (el.value && !el.value.startsWith('••'))) {
+      if (el.type === 'password') {
+        // Only include if user actually typed a new value (not empty)
+        if (el.value && el.value.trim()) {
+          updates[el.name] = el.value;
+          if (SECRET_FIELDS.has(el.name)) changedSecret = true;
+        }
+      } else {
         updates[el.name] = el.value;
       }
     }
@@ -308,8 +365,16 @@ function buildHtml(env: Record<string, string>): string {
         body: JSON.stringify(updates),
       });
       const json = await res.json();
-      if (json.ok) { showToast('Saved successfully', false); }
-      else { showToast(json.error || 'Save failed', true); }
+      if (json.ok) {
+        showToast('Saved successfully', false);
+        if (changedSecret) {
+          document.getElementById('restart-notice').classList.add('visible');
+        }
+        // Clear password fields after save
+        for (const el of form.querySelectorAll('input[type="password"]')) {
+          el.value = '';
+        }
+      } else { showToast(json.error || 'Save failed', true); }
     } catch(err) {
       showToast('Network error', true);
     }

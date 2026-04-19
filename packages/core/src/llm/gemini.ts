@@ -69,9 +69,13 @@ export class GeminiClient implements LLMClient {
           }) as any
         };
       }),
-      config: { 
+      config: {
         systemInstruction: systemPrompt,
-        tools: geminiTools.length > 0 ? geminiTools : undefined
+        tools: geminiTools.length > 0 ? geminiTools : undefined,
+        // Disable thinking when tools are present — thinking models attach
+        // thought_signatures to functionCall parts that must be replayed in
+        // history; since we strip them, disable thinking to avoid the error.
+        ...(geminiTools.length > 0 ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
       },
     });
 
