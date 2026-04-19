@@ -1,6 +1,6 @@
 {
   "name": "@agent-os-core/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Terminal REPL adapter for agent-os — the `aos` CLI.",
   "license": "MIT",
   "type": "module",
@@ -24,7 +24,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-os-core/core": "0.1.4",
+    "@agent-os-core/core": "0.1.5",
     "@agent-os-core/shared": "0.1.4",
     "@types/react": "^19.2.14",
     "chalk": "^5.4.1",

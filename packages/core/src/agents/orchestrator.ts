@@ -58,8 +58,8 @@ Request: `;
 const DECOMPOSE_PROMPT = `You are a task decomposer. Break this user request into focused sub-tasks for specialist agents.
 
 Available agent types and when to use them:
-- research: finding facts, comparisons, API docs, market info, technical explanations
-- code: writing/reviewing/debugging code, architecture decisions, file-level changes
+- research: EXTERNAL web research only — finding facts, comparisons, API docs, market info, third-party library docs. NEVER use for reading local files, exploring the codebase, or understanding project structure.
+- code: writing/reviewing/debugging code, reading local files, exploring the codebase, architecture decisions, file-level changes. Use this for ANY task that requires reading local project files.
 - plan: project plans, step-by-step roadmaps, workflow design, feature specs
 - general: anything that doesn't fit the above
 
@@ -67,6 +67,7 @@ Rules:
 - Max 4 sub-tasks. Do NOT add tasks just to fill the count.
 - Each instruction must be self-contained — the worker has no context other than what you write here.
 - Write instructions as direct imperatives: "Explain X", "Write Y that does Z", "Create a plan for A".
+- For codebase-related tasks (reading files, exploring packages, understanding project structure), always use "code" type, never "research".
 - Return ONLY valid JSON. No markdown, no explanation.
 
 Schema: { "tasks": [{ "type": "research"|"code"|"plan"|"general", "instruction": string }] }

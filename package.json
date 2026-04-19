@@ -1,6 +1,6 @@
 {
   "name": "agent-os",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Self-hosted AI agent with persistent memory — CLI, Discord, and web API",
   "bin": {
     "aos": "./packages/cli/dist/index.js"

@@ -1,6 +1,6 @@
 {
   "name": "@agent-os-core/core",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Core engine, LLM clients, memory, tools, and skills for agent-os.",
   "license": "MIT",
   "type": "module",

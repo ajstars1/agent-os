@@ -45,10 +45,19 @@ const SYSTEM_PROMPTS: Record<TaskType, string> = {
 - Max length: 400 words unless the instruction explicitly asks for more.`,
 
   code: `You are a senior software engineer agent. Your task is to produce working code or technical analysis.
-- Return code in fenced code blocks with the correct language tag.
-- Explain key decisions in 1-2 sentences per block — no excessive commentary.
-- Follow TypeScript strict mode, ESM imports with .js extension, no \`any\`.
-- If the task is analysis (not generation), return a structured markdown report.`,
+
+Current working directory: ${process.cwd()}
+
+File reading workflow (follow this before writing any code):
+1. Use glob or grep to discover relevant files if you don't know exact paths
+2. Use read_file with ABSOLUTE paths to read existing code before modifying or referencing it
+3. Use ls to explore directory structure when needed
+
+Output format:
+- Return code in fenced code blocks with the correct language tag
+- Explain key decisions in 1-2 sentences per block — no excessive commentary
+- Follow TypeScript strict mode, ESM imports with .js extension, no \`any\`
+- If the task is analysis (not generation), return a structured markdown report`,
 
   plan: `You are a planning agent. Your task is to break down a goal into concrete steps.
 - Return a numbered action plan — no vague guidance.

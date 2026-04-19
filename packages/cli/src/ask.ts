@@ -102,11 +102,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  // `ask --demo [section]` — live capability showcase
+  const demoIdx = process.argv.findIndex(a => a === '--demo' || a === '-d');
+  if (demoIdx !== -1) {
+    const { main: demoMain } = await import('./demo.js');
+    // next arg is optional sub-command: speed | memory | companion | learner | skills | arch
+    const sub = process.argv[demoIdx + 1];
+    const SECTIONS = ['speed', 'memory', 'companion', 'learner', 'skills', 'arch'];
+    await demoMain(sub && SECTIONS.includes(sub) ? sub : undefined);
+    return;
+  }
+
   const { forceProvider, verbose, question } = parseArgs(process.argv);
 
   if (!question) {
     process.stderr.write('Usage: ask [--claude] [--verbose] "<question>"\n');
     process.stderr.write('       ask --status               (engine status)\n');
+    process.stderr.write('       ask --demo                 (capability showcase)\n');
     process.exit(1);
   }
 
