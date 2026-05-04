@@ -14,6 +14,10 @@ export interface IMemoryStore {
    */
   deleteMessagesByIds(ids: string[]): void;
   clearConversation(conversationId: string): void;
+  /** Optional: set a conversation title (auto-generated or user-set). */
+  setTitle?(conversationId: string, title: string): void;
+  /** Optional: get a conversation title. */
+  getTitle?(conversationId: string): string | null;
   close(): void;
 }
 

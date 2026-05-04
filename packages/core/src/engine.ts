@@ -29,6 +29,8 @@ import { Orchestrator } from './agents/orchestrator.js';
 import type { FeedbackStore } from './memory/feedback-store.js';
 import { ToolExecutor } from './agents/tool-executor.js';
 import { PlanningManager, TaskRegistry } from './planning.js';
+import { TodoStore, TODO_TOOL_DEFINITION, makeTodoHandler } from './tools/todo.js';
+import { maybeAutoTitle } from './memory/title-generator.js';
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -110,6 +112,7 @@ export class AgentEngine {
   private readonly _toolExecutor?: ToolExecutor;
   public readonly planningManager: PlanningManager;
   public readonly taskRegistry: TaskRegistry;
+  private readonly _todoStore: TodoStore;
 
   constructor(
     private readonly config: Config,
@@ -132,7 +135,8 @@ export class AgentEngine {
     private readonly feedbackStore?: FeedbackStore,
   ) {
     this._orchestrator = new Orchestrator(claude, gemini, episodicStore, logger, tools);
-    
+    this._todoStore = new TodoStore();
+
     // ToolExecutor is now generalized — we can create it dynamically or keep one for each
     if (claude) {
       this._toolExecutor = new ToolExecutor(claude, tools, logger);
@@ -165,6 +169,9 @@ export class AgentEngine {
         }
       }
     });
+
+    // Register todo tool
+    this.tools.register(TODO_TOOL_DEFINITION, makeTodoHandler(this._todoStore));
 
     // Register planning tools
     this.tools.register({
@@ -377,7 +384,7 @@ export class AgentEngine {
       }
 
       // ── Step 6: Done ───────────────────────────────────────────────────────
-      console.log('Sleep cycle complete. Memory pruned and facts consolidated.');
+      this.logger.info('[SleepCycle] Complete — memory pruned and facts consolidated.');
     } finally {
       this._sleepRunning = false;
     }
@@ -578,6 +585,23 @@ When working with files:
       } else {
         yield { type: 'error', content: `${provider} client not configured.` };
       }
+    }
+
+    // ── Auto-title: generate a short conversation title after first exchange ──
+    if (fullResponse && this.memory.setTitle) {
+      const titleStore = {
+        setTitle: (id: string, t: string) => this.memory.setTitle!(id, t),
+        getTitle: (id: string) => this.memory.getTitle?.(id) ?? null,
+      };
+      maybeAutoTitle(
+        titleStore,
+        input.conversationId,
+        cleanedMessage,
+        fullResponse,
+        history.length,
+        this.logger,
+        this.config.ANTHROPIC_API_KEY,
+      );
     }
 
     // Update HAM access stats after response

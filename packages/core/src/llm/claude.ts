@@ -2,6 +2,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js';
 import type { StreamChunk, ToolDefinition, ToolCall } from '@agent-os-core/shared';
 import type { LLMClient, UnifiedMessage } from './base.js';
+import { withRetry } from '../utils/retry.js';
+import { estimateCost, formatCost } from './usage.js';
+
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
 export class ClaudeClient implements LLMClient {
   private readonly client: Anthropic;
@@ -27,9 +31,9 @@ export class ClaudeClient implements LLMClient {
         content: m.content.map(c => {
           if (c.type === 'text') return { type: 'text', text: c.text };
           if (c.type === 'tool_call') return { type: 'tool_use', id: c.id, name: c.name, input: c.input };
-          if (c.type === 'tool_result') return { type: 'tool_result', tool_use_id: c.toolCallId, content: c.content, is_error: c.isError };
-          return { type: 'text', text: '' };
-        }) as any
+          if (c.type === 'tool_result') return { type: 'tool_result' as const, tool_use_id: c.toolCallId, content: c.content, is_error: c.isError };
+          return { type: 'text' as const, text: '' };
+        })
       };
     });
 
@@ -39,13 +43,15 @@ export class ClaudeClient implements LLMClient {
       input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
     }));
 
-    const stream = this.client.messages.stream({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 8192,
-      system: systemPrompt,
-      messages: anthropicMessages,
-      ...(anthropicTools && anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
-    });
+    const stream = await withRetry(() =>
+      Promise.resolve(this.client.messages.stream({
+        model: CLAUDE_MODEL,
+        max_tokens: 8192,
+        system: systemPrompt,
+        messages: anthropicMessages,
+        ...(anthropicTools && anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
+      })),
+    );
 
     // Buffer for tool input JSON (streamed in fragments)
     const toolInputBuffers = new Map<number, string>();
@@ -91,13 +97,17 @@ export class ClaudeClient implements LLMClient {
           },
         };
       } else if (event.type === 'message_start' && event.message.usage) {
-        yield {
-          type: 'usage',
-          usage: {
-            inputTokens: event.message.usage.input_tokens,
-            outputTokens: event.message.usage.output_tokens,
-          },
+        const usage = {
+          inputTokens: event.message.usage.input_tokens,
+          outputTokens: event.message.usage.output_tokens,
+          cacheReadTokens: (event.message.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0,
+          cacheWriteTokens: (event.message.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0,
         };
+        const cost = estimateCost(usage, CLAUDE_MODEL);
+        if (cost > 0) {
+          yield { type: 'status', content: `tokens: ${usage.inputTokens}in/${usage.outputTokens}out • ${formatCost(cost)}` };
+        }
+        yield { type: 'usage', usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } };
       }
     }
 

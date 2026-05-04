@@ -11,11 +11,20 @@ import type { ToolRegistry } from './registry.js';
 import type { TieredStore } from '../memory/tiered-store.js';
 import type { HAMCompressor } from '../memory/compressor.js';
 import { stripTrailingWhitespace, findActualString, preserveQuoteStyle, applyEditToFile } from './editutils.js';
+import { isSafeUrl } from './url-safety.js';
+import { detectDangerousCommand, globalApproval } from './approval.js';
 
 const execAsync = promisify(exec);
 
 const MAX_FETCH_BYTES = 51_200;
 const MAX_FILE_BYTES = 65_536;
+
+/** Configurable tool output limits — applied to bash stdout and read_file. */
+export const TOOL_OUTPUT_LIMITS = {
+  maxBytes: 50_000,
+  maxLines: 2_000,
+  maxLineLength: 2_000,
+};
 
 const FULL_PATH = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/home/ubuntu/.local/bin';
 
@@ -83,6 +92,12 @@ async function handleWebFetch(
     return { toolCallId: '', content: parsed.error.toString(), isError: true };
   }
   const { url, timeoutMs } = parsed.data;
+
+  const safe = await isSafeUrl(url);
+  if (!safe) {
+    return { toolCallId: '', content: `Blocked: URL targets a private/internal address — ${url}`, isError: true };
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -125,12 +140,29 @@ const BashSchema = z.object({
 async function handleBash(
   raw: Record<string, unknown>,
   logger: Logger,
+  sessionId?: string,
 ): Promise<ToolResult> {
   const parsed = BashSchema.safeParse(raw);
   if (!parsed.success) {
     return { toolCallId: '', content: parsed.error.toString(), isError: true };
   }
   const { command, timeoutMs } = parsed.data;
+
+  const dangerous = detectDangerousCommand(command);
+  if (dangerous) {
+    const sid = sessionId ?? 'default';
+    if (!globalApproval.isApproved(sid, dangerous)) {
+      return {
+        toolCallId: '',
+        content:
+          `⚠ Dangerous command detected (${dangerous}).\n` +
+          `Command: ${command}\n` +
+          `Re-run with explicit confirmation to proceed. If you meant to do this, ` +
+          `acknowledge the risk in your message.`,
+        isError: true,
+      };
+    }
+  }
 
   try {
     const { stdout, stderr } = await execAsync(command, {
@@ -145,7 +177,10 @@ async function handleBash(
       },
       maxBuffer: 1024 * 1024,
     });
-    const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+    let output = [stdout, stderr].filter(Boolean).join('\n').trim();
+    if (output.length > TOOL_OUTPUT_LIMITS.maxBytes) {
+      output = output.slice(0, TOOL_OUTPUT_LIMITS.maxBytes) + '\n... (truncated)';
+    }
     logger.debug({ command }, 'bash tool executed');
     return { toolCallId: '', content: output || '(no output)', isError: false };
   } catch (err: unknown) {
@@ -181,16 +216,21 @@ async function handleReadFile(
 
   try {
     const content = await readFile(resolved, 'utf-8');
-    const lines = content.split('\n');
+    const allLines = content.split('\n');
+    const effectiveMaxLines = Math.min(limit ?? TOOL_OUTPUT_LIMITS.maxLines, TOOL_OUTPUT_LIMITS.maxLines);
     let startIdx = offset ? offset - 1 : 0;
-    let endIdx = limit ? startIdx + limit : lines.length;
-    
+    let endIdx = startIdx + effectiveMaxLines;
+
     // Bounds check
-    startIdx = Math.max(0, Math.min(startIdx, lines.length - 1));
-    endIdx = Math.max(startIdx, Math.min(endIdx, lines.length));
-    
-    const slice = lines.slice(startIdx, endIdx);
-    
+    startIdx = Math.max(0, Math.min(startIdx, allLines.length - 1));
+    endIdx = Math.max(startIdx, Math.min(endIdx, allLines.length));
+
+    const slice = allLines.slice(startIdx, endIdx).map((line) =>
+      line.length > TOOL_OUTPUT_LIMITS.maxLineLength
+        ? line.slice(0, TOOL_OUTPUT_LIMITS.maxLineLength) + '... [truncated]'
+        : line,
+    );
+
     // Format with line numbers (1-indexed)
     let formatted = slice.map((line, idx) => `${startIdx + idx + 1} | ${line}`).join('\n');
     
@@ -746,7 +786,7 @@ Usage:
       const command = typeof input['command'] === 'string' ? input['command'] : '';
       const allowed = await checkPermission('bash', input, `$ ${command}`);
       if (!allowed) return { toolCallId: '', content: 'Permission denied by user.', isError: true };
-      return handleBash(input, logger);
+      return handleBash(input, logger, 'default');
     },
   );
 

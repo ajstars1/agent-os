@@ -14,6 +14,7 @@ interface ConversationRow {
   id: string;
   channel: string;
   channel_id: string;
+  title: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -46,6 +47,7 @@ export class SQLiteMemoryStore implements IMemoryStore {
         id         TEXT PRIMARY KEY,
         channel    TEXT NOT NULL,
         channel_id TEXT NOT NULL,
+        title      TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -184,6 +186,19 @@ export class SQLiteMemoryStore implements IMemoryStore {
     this.db
       .prepare('DELETE FROM messages WHERE conversation_id = ?')
       .run(conversationId);
+  }
+
+  setTitle(conversationId: string, title: string): void {
+    this.db
+      .prepare('UPDATE conversations SET title = ? WHERE id = ?')
+      .run(title, conversationId);
+  }
+
+  getTitle(conversationId: string): string | null {
+    const row = this.db
+      .prepare<[string], { title: string | null }>('SELECT title FROM conversations WHERE id = ?')
+      .get(conversationId);
+    return row?.title ?? null;
   }
 
   close(): void {
