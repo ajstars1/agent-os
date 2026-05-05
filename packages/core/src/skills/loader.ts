@@ -4,6 +4,7 @@ import { homedir as getHomedir } from 'node:os';
 import { watch, type FSWatcher } from 'chokidar';
 import type { Logger } from '@agent-os-core/shared';
 import { SkillRecommender } from './recommender.js';
+import { BUNDLED_SKILLS } from './bundled/index.js';
 
 /** Extract the `description` field from YAML frontmatter (first `---` block). */
 function extractFrontmatterDescription(content: string): string {
@@ -113,6 +114,15 @@ export class SkillLoader {
       }
     }
 
+    // Load bundled skills (shipped with agent-os, always available)
+    // User skills with the same name override bundled ones
+    for (const { name, content } of BUNDLED_SKILLS) {
+      this.skillContents.set(name, content);
+      skillRaws.push({ name, content });
+      const desc = extractFrontmatterDescription(content);
+      skillStubs.push(`  /${name}${desc ? ` — ${desc}` : ''}`);
+    }
+
     // Walk skills directory — store full content privately, only expose stubs in system context
     try {
       if (existsSync(skillsPath)) {
@@ -133,7 +143,16 @@ export class SkillLoader {
             continue;
           }
 
-          this.skillContents.set(name, content);
+          this.skillContents.set(name, content); // overrides bundled skill with same name
+
+          // If this overrides a bundled skill, remove the old stub; we'll re-add below
+          const bundledStubIdx = skillRaws.findIndex((r) => r.name === name);
+          if (bundledStubIdx !== -1) {
+            skillRaws.splice(bundledStubIdx, 1);
+            const stubToRemove = skillStubs.findIndex((s) => s.trimStart().startsWith(`/${name}`));
+            if (stubToRemove !== -1) skillStubs.splice(stubToRemove, 1);
+          }
+
           skillRaws.push({ name, content });
 
           // Extract description from frontmatter for system context stub

@@ -7,6 +7,7 @@ import { healthRoute } from './routes/health.js';
 import { chatRoute } from './routes/chat.js';
 import { conversationsRoute } from './routes/conversations.js';
 import { memoryRoute } from './routes/memory.js';
+import { bridgeRoute } from './routes/bridge.js';
 
 export interface ServerDeps {
   engine: AgentEngine;
@@ -30,6 +31,7 @@ export function createServer(deps: ServerDeps): Hono {
   app.route('/conversations', conversationsRoute(engine, memory));
 
   app.route('/memory', memoryRoute(hamStore));
+  app.route('/bridge', bridgeRoute(engine));
 
   app.notFound((c) => c.json({ error: 'Not found' }, 404));
   app.onError((err, c) => {

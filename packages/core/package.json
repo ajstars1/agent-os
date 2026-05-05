@@ -10,6 +10,14 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./skills/hub": {
+      "import": "./dist/skills/hub.js",
+      "types": "./dist/skills/hub.d.ts"
+    },
+    "./skills/guard": {
+      "import": "./dist/skills/guard.js",
+      "types": "./dist/skills/guard.d.ts"
     }
   },
   "files": [
@@ -26,6 +34,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist"
+  },
+  "optionalDependencies": {
+    "@agent-os-core/browser": "0.1.0"
   },
   "dependencies": {
     "@agent-os-core/shared": "0.1.4",

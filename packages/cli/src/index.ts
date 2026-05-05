@@ -37,11 +37,13 @@ import { App } from './ui/App.js';
 
 // ─── Args ─────────────────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]): { agent?: string; model?: string; update?: boolean } {
-  const result: { agent?: string; model?: string; update?: boolean } = {};
+function parseArgs(argv: string[]): { agent?: string; model?: string; update?: boolean; voice?: boolean } {
+  const result: { agent?: string; model?: string; update?: boolean; voice?: boolean } = {};
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === 'update' || argv[i] === '--update') {
       result.update = true;
+    } else if (argv[i] === '--voice' || argv[i] === '-v') {
+      result.voice = true;
     } else if ((argv[i] === '--agent' || argv[i] === '-a') && argv[i + 1]) {
       result.agent = argv[i + 1]; i++;
     } else if ((argv[i] === '--model' || argv[i] === '-m') && argv[i + 1]) {
@@ -314,6 +316,27 @@ async function main(): Promise<void> {
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
+
+  // Voice mode — bypasses Ink, runs a terminal voice loop
+  if (args.voice) {
+    try {
+      const { runVoiceLoop } = await import('@agent-os-core/voice');
+      await runVoiceLoop({
+        engine,
+        conversationId: channelId,
+        ttsBackend: process.env['ELEVENLABS_API_KEY'] ? 'elevenlabs'
+          : process.env['OPENAI_API_KEY'] ? 'openai'
+          : 'system',
+        openaiKey: process.env['OPENAI_API_KEY'],
+        elevenLabsKey: process.env['ELEVENLABS_API_KEY'],
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Voice mode unavailable: ${msg}\nInstall @agent-os-core/voice and its dependencies.\n\n`);
+    }
+    shutdown();
+    return;
+  }
 
   const { waitUntilExit } = render(
     React.createElement(App, {

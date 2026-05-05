@@ -4,7 +4,9 @@ export { ClaudeClient } from './llm/claude.js';
 export { GeminiClient } from './llm/gemini.js';
 export type { GeminiMessage } from './llm/gemini.js';
 export { LLMRouter } from './llm/router.js';
-export type { IClassifier } from './llm/router.js';
+export type { IClassifier, RoutedProvider, ParsedModel } from './llm/router.js';
+export { OpenRouterClient, resolveORModel, OR_DEFAULT_MODEL } from './llm/openrouter.js';
+export { OllamaClient, checkOllamaAvailable, OLLAMA_DEFAULT_MODEL } from './llm/ollama.js';
 export type { IMemoryStore } from './memory/interface.js';
 export { SQLiteMemoryStore } from './memory/sqlite.js';
 export { TieredStore } from './memory/tiered-store.js';
@@ -44,6 +46,13 @@ export { LearnerClient } from './memory/learner-client.js';
 export type { Prediction, HotTopic, LearnerWarmup } from './memory/learner-client.js';
 export { FeedbackStore } from './memory/feedback-store.js';
 export type { FeedbackEntry } from './memory/feedback-store.js';
+export { runCurator, shouldRunCurator, recordSkillUsage } from './skills/curator.js';
+export type { CuratorResult, CuratorOptions, SkillMeta } from './skills/curator.js';
+export { searchSessions, searchAndSummarise, ensureFts5Schema } from './memory/fts5.js';
+export type { FtsMatch, SummarisedSearchResult, SessionSearchOptions } from './memory/fts5.js';
+export { readUserModel, getUserModelBlock, addUserFact, removeUserFact, extractAndUpdateUserModel, handleUserModelTool } from './memory/user-model.js';
+export { compressHistory, getContextLimit } from './memory/context-compressor.js';
+export type { CompressionResult } from './memory/context-compressor.js';
 
 import type { Config } from '@agent-os-core/shared';
 import { FeedbackStore as _FeedbackStore } from './memory/feedback-store.js';
@@ -124,6 +133,11 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
   const gemini = config.GOOGLE_API_KEY ? new GeminiClient(config.GOOGLE_API_KEY) : null;
   const router = new LLMRouter(gemini, config.DEFAULT_MODEL);
 
+  const { OpenRouterClient } = await import('./llm/openrouter.js');
+  const { OllamaClient } = await import('./llm/ollama.js');
+  const openrouter = config.OPENROUTER_API_KEY ? new OpenRouterClient(config.OPENROUTER_API_KEY) : null;
+  const ollama = new OllamaClient(); // always instantiated; fails gracefully if not running
+
   const agents = new AgentLoader(config.AGENTS_DIR, logger);
   await agents.load();
 
@@ -162,7 +176,7 @@ export async function bootstrap(config: Config): Promise<BootstrapResult> {
   const feedbackStore = new _FeedbackStore(config.DB_PATH.replace('.db', '-feedback.db'));
 
   const engine = new AgentEngine(
-    config, memory, skills, tools, claude, gemini, router, logger,
+    config, memory, skills, tools, claude, gemini, router, openrouter, ollama, logger,
     hamRetriever, hamStore, hamCompressor,
     undefined,              // semanticGraph (uses default)
     episodicStore,

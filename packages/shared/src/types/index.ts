@@ -1,6 +1,6 @@
-export type LLMProvider = 'claude' | 'gemini' | 'auto';
+export type LLMProvider = 'claude' | 'gemini' | 'openrouter' | 'ollama' | 'auto';
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
-export type ChannelType = 'cli' | 'discord' | 'whatsapp' | 'web';
+export type ChannelType = 'cli' | 'discord' | 'telegram' | 'slack' | 'whatsapp' | 'signal' | 'matrix' | 'email' | 'web';
 
 export interface Message {
   id: string;
@@ -39,11 +39,21 @@ export interface ToolResult {
   isError: boolean;
 }
 
+export interface SessionCost {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** Estimated USD cost for this turn. */
+  usdEstimate: number;
+  /** Cumulative USD cost for the full session. */
+  sessionUsdTotal: number;
+}
+
 export interface StreamChunk {
-  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done' | 'thinking' | 'status' | 'permission_request' | 'error';
+  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done' | 'thinking' | 'status' | 'permission_request' | 'error' | 'hook_blocked';
   content?: string;
   provider?: LLMProvider;
-  /** Resolved Gemini variant (e.g. 'gemini:flash-thinking') when auto-routing selects one. */
+  /** Resolved model label (e.g. 'gemini:flash-thinking', 'or:gpt-4o'). */
   model?: string;
   toolCall?: ToolCall;
   toolResult?: ToolResult;
@@ -51,6 +61,7 @@ export interface StreamChunk {
     inputTokens: number;
     outputTokens: number;
   };
+  cost?: SessionCost;
   permissionRequest?: {
     toolName: string;
     input: Record<string, unknown>;
@@ -70,21 +81,26 @@ export interface ToolDefinition {
 export interface Config {
   ANTHROPIC_API_KEY?: string;
   GOOGLE_API_KEY?: string;
+  OPENROUTER_API_KEY?: string;
+  BRAVE_SEARCH_API_KEY?: string;
   DISCORD_TOKEN?: string;
   DISCORD_CLIENT_ID?: string;
   DISCORD_GUILD_ID?: string;
   DISCORD_ALLOWED_CHANNELS?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  SLACK_BOT_TOKEN?: string;
   SKILLS_DIR: string;
   CLAUDE_MD_PATH: string;
   DB_PATH: string;
   DEFAULT_MODEL: LLMProvider;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
   NODE_ENV: 'development' | 'production' | 'test';
-  // Phase 2 additions
   WEB_PORT: number;
   WEB_CORS_ORIGIN: string;
   AGENTS_DIR: string;
   ALLOWED_DIRS?: string;
   NEURAL_ENGINE_URL: string;
   CONFIG_UI_PORT: number;
+  /** Hooks loaded from settings.json. Not in .env — populated by loadSettings(). */
+  hooks?: import('./hooks.js').HookBinding[];
 }

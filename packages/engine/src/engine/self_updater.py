@@ -87,6 +87,21 @@ MUTABLE_PARAMS: dict[str, tuple[float, float, str]] = {
         0.05, 0.40,
         "Minimum confidence for a topic to appear in predictions. Lower = more predictions.",
     ),
+    # New params (Phase 4 additions)
+    "COOCCURRENCE_WINDOW_DAYS": (
+        1.0, 30.0,
+        "How many days of episodes to consider when building co-occurrence graph. "
+        "Higher = longer memory for topic relationships, slower updates.",
+    ),
+    "CONSOLIDATION_BATCH_SIZE": (
+        1.0, 6.0,
+        "Max LLM-merged memory pairs per consolidation run. Higher = more merging per day.",
+    ),
+    "SELF_UPDATE_SENSITIVITY": (
+        0.5, 3.0,
+        "Multiplier on how aggressively metrics trigger self-updates. "
+        "Higher = more reactive parameter tuning.",
+    ),
 }
 
 # ── Self-governance limits (IMMUTABLE) ────────────────────────────────────────
@@ -134,6 +149,9 @@ def ensure_audit_schema(db_path: str) -> None:
             "VIABILITY_THRESHOLD": 0.02,
             "MAX_GRAPH_EDGES": 500.0,
             "PREDICTION_CONFIDENCE_MIN": 0.15,
+            "COOCCURRENCE_WINDOW_DAYS": 14.0,
+            "CONSOLIDATION_BATCH_SIZE": 3.0,
+            "SELF_UPDATE_SENSITIVITY": 1.0,
         }
         for key, val in defaults.items():
             conn.execute(
@@ -152,6 +170,9 @@ def load_config(db_path: str) -> dict[str, float]:
         "VIABILITY_THRESHOLD": 0.02,
         "MAX_GRAPH_EDGES": 500.0,
         "PREDICTION_CONFIDENCE_MIN": 0.15,
+        "COOCCURRENCE_WINDOW_DAYS": 14.0,
+        "CONSOLIDATION_BATCH_SIZE": 3.0,
+        "SELF_UPDATE_SENSITIVITY": 1.0,
     })
     try:
         with sqlite3.connect(db_path, timeout=5) as conn:

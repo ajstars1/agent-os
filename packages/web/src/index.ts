@@ -40,8 +40,13 @@ async function main(): Promise<void> {
     hamStore,
   });
 
+  const { secretFilePath } = await import('./bridge-secret.js');
   const server = serve({ fetch: app.fetch, port: config.WEB_PORT }, (info) => {
     logger.info({ port: info.port }, 'AgentOS web server started');
+    logger.info(
+      { secretFile: secretFilePath(), bridgeUrl: `http://localhost:${info.port}/bridge` },
+      'IDE bridge ready — VS Code extension reads secret from secretFile',
+    );
   });
 
   const shutdown = (): void => {

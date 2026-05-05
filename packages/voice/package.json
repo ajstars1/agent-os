@@ -1,0 +1,33 @@
+{
+  "name": "@agent-os-core/voice",
+  "version": "0.1.0",
+  "description": "Voice I/O for agent-os — mic recording, Whisper transcription, multi-backend TTS.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@agent-os-core/shared": "0.1.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.3"
+  },
+  "peerDependencies": {
+    "@agent-os-core/shared": ">=0.1.4"
+  }
+}

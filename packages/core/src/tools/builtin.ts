@@ -637,6 +637,95 @@ async function handleLs(
   return { toolCallId: '', content: lines.join('\n'), isError: false };
 }
 
+// ─── web_search ───────────────────────────────────────────────────────────────
+
+const WebSearchSchema = z.object({
+  query: z.string().min(1).max(500),
+  /** Number of results (max 10). */
+  count: z.number().int().min(1).max(10).default(5),
+  /** Optional Brave Search API key — falls back to DuckDuckGo HTML scrape. */
+  braveApiKey: z.string().optional(),
+});
+
+async function handleWebSearch(
+  raw: Record<string, unknown>,
+  logger: Logger,
+): Promise<ToolResult> {
+  const parsed = WebSearchSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { toolCallId: '', content: parsed.error.toString(), isError: true };
+  }
+  const { query, count } = parsed.data;
+  const braveKey = parsed.data.braveApiKey ?? process.env['BRAVE_SEARCH_API_KEY'];
+
+  if (braveKey) {
+    try {
+      const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
+      const res = await fetch(url, {
+        headers: { 'Accept': 'application/json', 'X-Subscription-Token': braveKey },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`Brave API ${res.status}`);
+      const json = await res.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
+      const results = json.web?.results ?? [];
+      if (results.length === 0) return { toolCallId: '', content: '(no results)', isError: false };
+      const formatted = results
+        .slice(0, count)
+        .map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.description}`)
+        .join('\n\n');
+      logger.debug({ query, count: results.length }, 'web_search (Brave) complete');
+      return { toolCallId: '', content: formatted, isError: false };
+    } catch (err: unknown) {
+      logger.warn({ err }, 'Brave Search failed — falling back to DuckDuckGo');
+    }
+  }
+
+  // DuckDuckGo HTML scrape (free, no API key)
+  try {
+    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const res = await fetch(ddgUrl, {
+      headers: { 'User-Agent': 'agent-os/0.3.0' },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) throw new Error(`DuckDuckGo ${res.status}`);
+    const html = await res.text();
+
+    // Extract results from DuckDuckGo HTML
+    const results: Array<{ title: string; url: string; snippet: string }> = [];
+    const resultRegex = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = resultRegex.exec(html)) !== null && results.length < count) {
+      const url = match[1]?.replace(/\//g, '/') ?? '';
+      const title = (match[2] ?? '').trim();
+      const snippet = (match[3] ?? '').replace(/<[^>]+>/g, '').trim();
+      if (title && url) results.push({ title, url, snippet });
+    }
+
+    if (results.length === 0) {
+      // Simpler fallback extraction
+      const titleMatches = [...html.matchAll(/class="result__a"[^>]*>([^<]+)<\/a>/gi)];
+      const urlMatches = [...html.matchAll(/result__url[^>]*>([^<]+)<\/a>/gi)];
+      for (let i = 0; i < Math.min(count, titleMatches.length); i++) {
+        results.push({
+          title: (titleMatches[i]?.[1] ?? '').trim(),
+          url: (urlMatches[i]?.[1] ?? '').trim(),
+          snippet: '',
+        });
+      }
+    }
+
+    if (results.length === 0) return { toolCallId: '', content: '(no results found)', isError: false };
+    const formatted = results
+      .map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ''}`)
+      .join('\n\n');
+    logger.debug({ query, count: results.length }, 'web_search (DuckDuckGo) complete');
+    return { toolCallId: '', content: formatted, isError: false };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { toolCallId: '', content: `Search failed: ${msg}`, isError: true };
+  }
+}
+
 // ─── remember ────────────────────────────────────────────────────────────────
 
 const RememberSchema = z.object({
@@ -938,6 +1027,26 @@ Usage:
       },
     },
     (input) => handleLs(input, logger),
+  );
+
+  registry.register(
+    {
+      name: 'web_search',
+      description:
+        `Search the web for current information. Returns titles, URLs and snippets.
+
+Uses Brave Search API if BRAVE_SEARCH_API_KEY is set, otherwise falls back to DuckDuckGo (free, no key needed).
+Use this when you need real-time information, recent events, or anything not in your training data.`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query' },
+          count: { type: 'number', description: 'Number of results (1-10, default 5)', default: 5 },
+        },
+        required: ['query'],
+      },
+    },
+    (input) => handleWebSearch(input, logger),
   );
 
   registry.register(

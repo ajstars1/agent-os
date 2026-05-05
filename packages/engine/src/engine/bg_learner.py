@@ -432,6 +432,221 @@ def _prediction_pass(db_path: str) -> int:
     return len(predictions)
 
 
+def _dream_journal_pass(
+    db_path: str,
+    maturity: str,
+    episode_count: int,
+    sleep_result: dict,
+) -> dict:
+    """
+    Generate a human-readable dream journal entry after each sleep cycle.
+
+    The journal captures:
+    - What was consolidated / pruned this cycle
+    - Top interests and predictions for tomorrow
+    - Any self-updates applied
+    - Maturity progress
+
+    Stored in dream_journal table and exposed via /dream/journal endpoint.
+    Returns the journal dict for immediate display to the user.
+    """
+    now_ms = int(time.time() * 1000)
+    today = date.today().isoformat()
+    config = load_config(db_path)
+
+    journal: dict = {
+        "date": today,
+        "generated_at_ms": now_ms,
+        "maturity": maturity,
+        "episode_count": episode_count,
+        "sleep": {},
+        "memory": {},
+        "predictions": [],
+        "self_updates": [],
+        "observations": [],
+    }
+
+    try:
+        with _connect(db_path) as conn:
+            # Sleep cycle summary
+            journal["sleep"] = {
+                "messages_pruned": sleep_result.get("logs_pruned", 0),
+                "messages_retained": sleep_result.get("logs_retained", 0),
+                "consolidated_chars": len(sleep_result.get("consolidated_context", "")),
+            }
+
+            # Memory stats
+            ep_count = conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+            interest_count = conn.execute("SELECT COUNT(*) FROM interest_map").fetchone()[0]
+
+            top_topics = conn.execute(
+                "SELECT topic, weight FROM interest_map ORDER BY weight DESC LIMIT 5"
+            ).fetchall()
+
+            journal["memory"] = {
+                "total_episodes": int(ep_count),
+                "tracked_topics": int(interest_count),
+                "top_interests": [
+                    {"topic": r["topic"], "weight": round(float(r["weight"]), 3)}
+                    for r in top_topics
+                ],
+            }
+
+            # Today's predictions
+            preds = conn.execute(
+                "SELECT topic, confidence, source FROM predictions WHERE predicted_date = ? ORDER BY confidence DESC LIMIT 5",
+                (today,),
+            ).fetchall()
+            journal["predictions"] = [
+                {"topic": r["topic"], "confidence": round(float(r["confidence"]), 2), "source": r["source"]}
+                for r in preds
+            ]
+
+            # Recent self-updates
+            recent_updates = conn.execute(
+                "SELECT param_key, old_value, new_value, reason FROM update_audit_log WHERE applied = 1 ORDER BY timestamp_ms DESC LIMIT 3"
+            ).fetchall()
+            journal["self_updates"] = [
+                {"param": r["param_key"], "old": round(float(r["old_value"]), 4),
+                 "new": round(float(r["new_value"]), 4), "reason": r["reason"]}
+                for r in recent_updates
+            ]
+
+            # Maturity progress
+            next_ul = _next_unlock(episode_count)
+            remaining = next_ul.get("remaining", 0)
+            if isinstance(remaining, int) and remaining > 0:
+                journal["observations"].append(
+                    f"{remaining} more interactions until '{next_ul.get('unlocks')}' unlocks."
+                )
+
+            # Interest health
+            il = config.get("INTEREST_LAMBDA", 0.10)
+            journal["observations"].append(
+                f"Interest decay rate: {il:.3f} — topics stay relevant for ~{int(0.693 / il)} days."
+            )
+
+            if journal["sleep"]["messages_pruned"] > 0:
+                journal["observations"].append(
+                    f"Pruned {journal['sleep']['messages_pruned']} redundant messages from memory."
+                )
+
+            # Store in dream_journal table
+            _ensure_dream_journal_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO dream_journal (journal_date, generated_at_ms, report_json)
+                VALUES (?, ?, ?)
+                """,
+                (today, now_ms, json.dumps(journal)),
+            )
+            # Keep last 365 entries
+            conn.execute(
+                "DELETE FROM dream_journal WHERE id NOT IN (SELECT id FROM dream_journal ORDER BY generated_at_ms DESC LIMIT 365)"
+            )
+            conn.commit()
+
+    except Exception as e:
+        logger.warning("[DreamJournal] Pass failed: %s", e)
+        journal["observations"].append(f"Journal generation partially failed: {e}")
+
+    return journal
+
+
+def _ensure_dream_journal_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dream_journal (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            journal_date    TEXT NOT NULL,
+            generated_at_ms INTEGER NOT NULL,
+            report_json     TEXT NOT NULL
+        )
+    """)
+
+
+def _adult_web_search_pass(db_path: str, google_api_key: str) -> int:
+    """
+    ADULT+ only. One targeted web search per week.
+
+    Finds the user's #1 predicted topic and fetches a current snippet from
+    the web to pre-warm context. Example: if the user always asks about
+    Next.js releases, fetch the latest changelog summary proactively.
+
+    Budget: 1 LLM call (to form the query) + 1 web search per week.
+    Stores the result in a web_context table for TypeScript to inject.
+    """
+    try:
+        import google.genai as genai  # type: ignore[import]
+    except ImportError:
+        return 0
+
+    today = date.today().isoformat()
+    week_key = str(int(time.time()) // (7 * 86400))
+
+    with _connect(db_path) as conn:
+        # One search per week max
+        last_search = conn.execute(
+            "SELECT value FROM learner_stats WHERE key = 'last_adult_web_search_week'"
+        ).fetchone()
+        if last_search and last_search["value"] == week_key:
+            return 0
+
+        # Get top predicted topic
+        top_pred = conn.execute(
+            "SELECT topic FROM predictions WHERE predicted_date = ? ORDER BY confidence DESC LIMIT 1",
+            (today,),
+        ).fetchone()
+        if not top_pred:
+            return 0
+
+        topic = top_pred["topic"]
+
+    try:
+        client = genai.Client(api_key=google_api_key)
+
+        # Use Gemini with Google Search grounding for a current snippet
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"Give me a 2-sentence summary of the latest developments in: {topic}. Focus on recent news from the last 2 weeks.",
+            config=genai.types.GenerateContentConfig(
+                tools=[genai.types.Tool(google_search=genai.types.GoogleSearch())],
+                max_output_tokens=150,
+            ),
+        )
+        snippet = (response.text or "").strip()
+        if not snippet:
+            return 0
+
+        with _connect(db_path) as conn:
+            _ensure_web_context_schema(conn)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO web_context (topic, snippet, fetched_date)
+                VALUES (?, ?, ?)
+                """,
+                (topic, snippet, today),
+            )
+            _set_stat(conn, "last_adult_web_search_week", week_key)
+            conn.commit()
+
+        logger.info("[AdultWebSearch] Fetched context for topic: %s", topic)
+        return 1
+
+    except Exception as e:
+        logger.warning("[AdultWebSearch] Failed: %s", e)
+        return 0
+
+
+def _ensure_web_context_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS web_context (
+            topic        TEXT PRIMARY KEY,
+            snippet      TEXT NOT NULL,
+            fetched_date TEXT NOT NULL
+        )
+    """)
+
+
 def _llm_consolidation_pass(db_path: str, google_api_key: str) -> int:
     """
     YOUNG_ADULT+ only. One LLM call per day, max.
@@ -837,7 +1052,11 @@ class BackgroundLearner:
             loop.create_task(self._consolidation_loop()),   # young_adult+
             loop.create_task(self._self_model_loop()),      # weekly self-assessment
             loop.create_task(self._self_update_loop()),     # weekly self-tuning (teen+)
+            loop.create_task(self._adult_web_search_loop()),  # adult+ web search 1x/week
         ]
+
+        # Store reference to latest dream journal in memory for /dream/journal
+        self._last_dream_journal: dict = {}
 
     async def stop(self) -> None:
         self._running = False
@@ -919,6 +1138,18 @@ class BackgroundLearner:
                     self._maturity, bool(self.google_api_key),
                 )
             await asyncio.sleep(24 * 60 * 60)
+
+    async def _adult_web_search_loop(self) -> None:
+        """Once per week — ADULT+ only. Fetch current context for top predicted topic."""
+        await asyncio.sleep(360)
+        while self._running:
+            self._refresh_maturity()
+            if self._maturity == "adult" and self.google_api_key:
+                await self._run(
+                    lambda db: _adult_web_search_pass(db, self.google_api_key),  # type: ignore[arg-type]
+                    "adult_web_search",
+                )
+            await asyncio.sleep(7 * 24 * 60 * 60)
 
     async def _run(self, fn: object, label: str) -> None:
         loop = asyncio.get_event_loop()
@@ -1026,6 +1257,54 @@ class BackgroundLearner:
             }
         except Exception:
             return {}
+
+    def generate_dream_journal(self, sleep_result: dict) -> dict:
+        """
+        Generate and store a dream journal entry after a sleep cycle.
+        Called from app.py's /trigger_sleep endpoint.
+        """
+        try:
+            journal = _dream_journal_pass(
+                self.db_path,
+                self._maturity,
+                self._episode_count(),
+                sleep_result,
+            )
+            self._last_dream_journal = journal
+            return journal
+        except Exception as e:
+            logger.warning("[DreamJournal] generate failed: %s", e)
+            return {"error": str(e)}
+
+    def get_dream_journal(self, limit: int = 7) -> list[dict]:
+        """Return the last N dream journal entries."""
+        try:
+            with _connect(self.db_path) as conn:
+                _ensure_dream_journal_schema(conn)
+                rows = conn.execute(
+                    "SELECT journal_date, generated_at_ms, report_json FROM dream_journal ORDER BY generated_at_ms DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                return [
+                    {"journal_date": r["journal_date"], "generated_at_ms": r["generated_at_ms"],
+                     **json.loads(r["report_json"])}
+                    for r in rows
+                ]
+        except Exception:
+            return []
+
+    def get_web_context(self) -> list[dict]:
+        """Return proactively fetched web context snippets (adult+ only)."""
+        try:
+            with _connect(self.db_path) as conn:
+                _ensure_web_context_schema(conn)
+                rows = conn.execute(
+                    "SELECT topic, snippet, fetched_date FROM web_context ORDER BY fetched_date DESC LIMIT 5"
+                ).fetchall()
+                return [{"topic": r["topic"], "snippet": r["snippet"], "date": r["fetched_date"]}
+                        for r in rows]
+        except Exception:
+            return []
 
     def get_hot_topics(self, limit: int = 10) -> list[dict[str, object]]:
         try:

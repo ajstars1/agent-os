@@ -395,10 +395,45 @@ async def trigger_sleep(request: SleepRequest) -> SleepResponse:
     total = len(request.logs)
     pruned = len(result.indices_to_delete)
 
-    return SleepResponse(
+    sleep_response = SleepResponse(
         indices_to_delete=result.indices_to_delete,
         consolidated_context=result.consolidated_context,
         logs_total=total,
         logs_pruned=pruned,
         logs_retained=total - pruned,
     )
+
+    # Generate dream journal entry (non-blocking — best effort)
+    if _LEARNER is not None:
+        try:
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            loop.run_in_executor(
+                None,
+                _LEARNER.generate_dream_journal,
+                {
+                    "logs_pruned": pruned,
+                    "logs_retained": total - pruned,
+                    "consolidated_context": result.consolidated_context,
+                },
+            )
+        except Exception:
+            pass
+
+    return sleep_response
+
+
+@app.get("/dream/journal", tags=["learner"])
+async def dream_journal(limit: int = 7) -> list[dict[str, Any]]:
+    """Return the last N dream journal entries — human-readable summaries of sleep cycles."""
+    if _LEARNER is None:
+        return []
+    return _LEARNER.get_dream_journal(limit)
+
+
+@app.get("/web-context", tags=["learner"])
+async def web_context() -> list[dict[str, Any]]:
+    """Return proactively fetched web context snippets (ADULT+ only, 1x/week)."""
+    if _LEARNER is None:
+        return []
+    return _LEARNER.get_web_context()

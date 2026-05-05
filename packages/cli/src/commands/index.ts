@@ -56,6 +56,8 @@ const HELP_TEXT = `Available commands:
   /help                           Show this help message
   /clear                          Clear conversation history
   /model <claude|gemini|auto>     Switch model (gemini:flash|pro|flash-thinking|pro-thinking)
+  /model openrouter|or:<id>       Route to OpenRouter (or:gpt-4o, or:llama-3, or:mixtral...)
+  /model ollama|ol:<model>        Route to local Ollama (ol:llama3.2, ol:codellama...)
   /config                         Show all config keys and values
   /config set <KEY> <value>       Update a config key in ~/.agent-os/.env
   /config path                    Show config file path
@@ -74,8 +76,18 @@ const HELP_TEXT = `Available commands:
   /export [filename]              Export conversation to markdown
   /cd <path>                      Change working directory
   /cwd                            Print current working directory
-  /dream                          Run memory consolidation cycle
+  /dream                          Run memory consolidation sleep cycle
+  /dream journal                  Show last 3 dream journal entries (what changed)
+  /voice                          Switch to voice mode (mic → Whisper → agent → TTS)
   /agents                         List agent profiles
+  /gateway                        Show platform gateway status (Telegram, Discord, Slack, etc.)
+  /skills list                    List all available skills (bundled + installed)
+  /skills search <query>          Search hub for community skills
+  /skills install <id>            Install from hub (category/name) or GitHub URL
+  /skills publish <name>          Publish a skill to the hub (requires HUB_TOKEN)
+  /cron list                      List scheduled cron jobs
+  /cron add "name" --schedule "0 9 * * *" --prompt "..." --deliver discord
+  /cron pause|resume|delete <name>
   /update                         Pull latest code and rebuild
   /exit                           Exit agent-os`;
 
@@ -129,16 +141,23 @@ export const commands: Record<
 
   model: (args, ctx) => {
     const model = args.trim();
-    const valid = ['claude', 'gemini', 'auto', 'gemini:flash', 'gemini:pro', 'gemini:flash-thinking', 'gemini:pro-thinking'];
-    if (!valid.includes(model)) {
-      return `Invalid model. Choose:\n  claude | gemini | auto\n  gemini:flash | gemini:pro | gemini:flash-thinking | gemini:pro-thinking`;
+    const staticValid = ['claude', 'gemini', 'auto', 'gemini:flash', 'gemini:pro', 'gemini:flash-thinking', 'gemini:pro-thinking'];
+    const isValid = staticValid.includes(model)
+      || model.startsWith('or:')   // or:openai/gpt-4o, or:gpt-4o-mini ...
+      || model.startsWith('ol:')   // ol:llama3.2, ol:codellama ...
+      || model === 'openrouter'
+      || model === 'ollama';
+    if (!isValid) {
+      return `Invalid model. Choose:\n  claude | gemini | auto\n  gemini:flash | gemini:pro | gemini:flash-thinking | gemini:pro-thinking\n  openrouter | or:<model-id>   (e.g. or:gpt-4o, or:openai/gpt-4o)\n  ollama | ol:<model>           (e.g. ol:llama3.2, ol:codellama)`;
     }
     ctx.currentModel.value = model;
     const labels: Record<string, string> = {
       'gemini:flash': 'Gemini 2.0 Flash',
       'gemini:pro': 'Gemini 1.5 Pro',
-      'gemini:flash-thinking': 'Gemini Flash Thinking (budget: 8k tokens)',
-      'gemini:pro-thinking': 'Gemini 2.5 Pro + Thinking (budget: 16k tokens)',
+      'gemini:flash-thinking': 'Gemini Flash Thinking',
+      'gemini:pro-thinking': 'Gemini 2.5 Pro + Thinking',
+      'openrouter': 'OpenRouter (default: gpt-4o-mini)',
+      'ollama': 'Ollama (local, default: llama3.2)',
     };
     return `Model set to: ${labels[model] ?? model}`;
   },
@@ -216,11 +235,68 @@ export const commands: Record<
     return lines.join('\n');
   },
 
-  skills: (_args, ctx) => {
-    const context = ctx.skills.getSystemContext();
-    const lines = context.split('\n').filter((l) => l.startsWith('# Skill:'));
-    if (lines.length === 0) return 'No skills loaded.';
-    return 'Loaded skills:\n' + lines.map((l) => `  • ${l.replace('# Skill: ', '')}`).join('\n');
+  skills: async (args, ctx) => {
+    const parts = args.trim().split(/\s+/);
+    const sub = parts[0] ?? 'list';
+
+    if (!sub || sub === 'list') {
+      const names = ctx.skills.getSkillNames();
+      if (names.length === 0) return 'No skills loaded.';
+      const lines = names.map((n) => `  /${n}`);
+      return `Skills (${names.length}):\n${lines.join('\n')}\n\nRun /skills search <query> to find more on the hub.`;
+    }
+
+    if (sub === 'search') {
+      const query = parts.slice(1).join(' ');
+      if (!query) return 'Usage: /skills search <query>';
+      try {
+        const { searchSkills } = await import('@agent-os-core/core/skills/hub') as { searchSkills: typeof import('@agent-os-core/core/skills/hub').searchSkills };
+        const result = await searchSkills(query, { limit: 8 });
+        if (result.entries.length === 0) return `No skills found for "${query}" (source: ${result.source})`;
+        const lines = result.entries.map((e) =>
+          `  ${e.id}\n    ${e.description} ★${e.stars}`
+        );
+        return `Skills matching "${query}" (${result.total} total, source: ${result.source}):\n\n${lines.join('\n\n')}\n\nInstall with: /skills install <id>`;
+      } catch (err) {
+        return `Search failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    if (sub === 'install') {
+      const identifier = parts.slice(1).join(' ');
+      if (!identifier) return 'Usage: /skills install <category/name | github.com/user/repo | URL>';
+      try {
+        const { installSkill } = await import('@agent-os-core/core/skills/hub') as { installSkill: typeof import('@agent-os-core/core/skills/hub').installSkill };
+        const skillsDir = process.env['SKILLS_DIR'] ?? '~/.claude/skills';
+        const result = await installSkill(identifier, skillsDir, {
+          hubToken: process.env['HUB_TOKEN'],
+        });
+        if (result.success) {
+          await ctx.skills.load();
+          return `✓ ${result.message}\nReloaded ${ctx.skills.getSkillNames().length} skills.`;
+        }
+        return `✗ ${result.message}`;
+      } catch (err) {
+        return `Install failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    if (sub === 'publish') {
+      const skillName = parts[1];
+      if (!skillName) return 'Usage: /skills publish <name>';
+      const hubToken = process.env['HUB_TOKEN'];
+      if (!hubToken) return 'HUB_TOKEN environment variable required to publish skills.';
+      try {
+        const { publishSkill } = await import('@agent-os-core/core/skills/hub') as { publishSkill: typeof import('@agent-os-core/core/skills/hub').publishSkill };
+        const skillsDir = process.env['SKILLS_DIR'] ?? '~/.claude/skills';
+        const result = await publishSkill(skillName, skillsDir, hubToken);
+        return result.success ? `✓ ${result.message}${result.url ? `\n  URL: ${result.url}` : ''}` : `✗ ${result.message}`;
+      } catch (err) {
+        return `Publish failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    return `Unknown subcommand. Usage:\n  /skills list\n  /skills search <query>\n  /skills install <id>\n  /skills publish <name>`;
   },
 
   memory: async (args, ctx) => {
@@ -304,14 +380,69 @@ export const commands: Record<
 
   cwd: () => process.cwd(),
 
-  dream: (_args, ctx) => {
+  dream: async (args, ctx) => {
+    const sub = args.trim();
+    if (sub === 'journal' || sub === 'log') {
+      // Fetch and display dream journal from neural engine
+      try {
+        const res = await fetch(`${process.env['NEURAL_ENGINE_URL'] ?? 'http://localhost:8765'}/dream/journal?limit=3`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) return 'Dream journal not available (is the neural engine running?)';
+        const entries = await res.json() as Array<Record<string, unknown>>;
+        if (!entries.length) return 'No dream journal entries yet. Run /dream first to generate one.';
+
+        return entries.map((e) => {
+          const lines: string[] = [`## Dream — ${String(e['date'] ?? 'unknown')}`];
+          const mem = e['memory'] as Record<string, unknown> | undefined;
+          if (mem) {
+            lines.push(`Episodes: ${String(mem['total_episodes'] ?? '?')} | Topics tracked: ${String(mem['tracked_topics'] ?? '?')}`);
+            const topics = mem['top_interests'] as Array<{topic: string; weight: number}> | undefined;
+            if (topics?.length) {
+              lines.push(`Top interests: ${topics.map((t) => `${t.topic}(${t.weight.toFixed(2)})`).join(', ')}`);
+            }
+          }
+          const sleep = e['sleep'] as Record<string, unknown> | undefined;
+          if (sleep) {
+            lines.push(`Pruned: ${String(sleep['messages_pruned'] ?? 0)} messages, retained ${String(sleep['messages_retained'] ?? 0)}`);
+          }
+          const preds = e['predictions'] as Array<{topic: string; confidence: number}> | undefined;
+          if (preds?.length) {
+            lines.push(`Tomorrow's predictions: ${preds.slice(0, 3).map((p) => `${p.topic}(${p.confidence})`).join(', ')}`);
+          }
+          const obs = e['observations'] as string[] | undefined;
+          if (obs?.length) obs.forEach((o) => lines.push(`• ${o}`));
+          return lines.join('\n');
+        }).join('\n\n---\n\n');
+      } catch {
+        return 'Dream journal not available (neural engine offline).';
+      }
+    }
+
     try {
       ctx.engine.startSleepCycle();
-      return 'Sleep cycle started — memory consolidation in progress.';
+      return 'Sleep cycle started — memory consolidation in progress.\nRun /dream journal to see what changed.';
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return `Error: ${msg}`;
     }
+  },
+
+  voice: async (_args, ctx) => {
+    try {
+      const { runVoiceLoop } = await import('@agent-os-core/voice');
+      await runVoiceLoop({
+        engine: ctx.engine,
+        conversationId: ctx.conversationId,
+        ttsBackend: process.env['ELEVENLABS_API_KEY'] ? 'elevenlabs' : process.env['OPENAI_API_KEY'] ? 'openai' : 'system',
+        openaiKey: process.env['OPENAI_API_KEY'],
+        elevenLabsKey: process.env['ELEVENLABS_API_KEY'],
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `Voice mode unavailable: ${msg}\nRun: aos --voice to use voice mode, or install @agent-os-core/voice.`;
+    }
+    return '';
   },
 
   agents: (_args, ctx) => {
@@ -458,6 +589,96 @@ export const commands: Record<
     } catch (err) {
       const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
       return `Update failed (${msg}).\nTry: npm install -g agent-os`;
+    }
+  },
+
+  gateway: async (args) => {
+    const sub = args.trim().split(/\s+/)[0] ?? 'status';
+
+    if (sub === 'status' || sub === 'list') {
+      const checks: Record<string, string[]> = {
+        telegram: ['TELEGRAM_BOT_TOKEN'],
+        discord: ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'],
+        slack: ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'],
+        whatsapp: ['WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_VERIFY_TOKEN'],
+        signal: ['SIGNAL_CLI_URL', 'SIGNAL_NUMBER'],
+        matrix: ['MATRIX_HOMESERVER_URL', 'MATRIX_ACCESS_TOKEN', 'MATRIX_USER_ID'],
+        email: ['EMAIL_IMAP_HOST', 'EMAIL_USER', 'EMAIL_PASSWORD'],
+      };
+      const lines = ['Platform gateway status:\n'];
+      for (const [name, vars] of Object.entries(checks)) {
+        const missing = vars.filter((v) => !process.env[v]);
+        const ok = missing.length === 0;
+        lines.push(`  ${ok ? '✅' : '○ '} ${name.padEnd(12)} ${ok ? 'configured' : `missing: ${missing.join(', ')}`}`);
+      }
+      lines.push('\nStart with: aos-gateway\nOr for specific platforms: aos-gateway --only telegram,discord');
+      return lines.join('\n');
+    }
+
+    return 'Usage: /gateway [status]\nTo start the daemon: aos-gateway (or: aos-gateway --only telegram,discord)';
+  },
+
+  cron: async (args) => {
+    const parts = args.trim().split(/\s+/);
+    const sub = parts[0] ?? 'list';
+
+    try {
+      const { createJob, listJobs, enableJob, deleteJob, CreateJobSchema } = await import('@agent-os-core/cron');
+
+      if (sub === 'list') {
+        const jobs = listJobs();
+        if (jobs.length === 0) return 'No cron jobs. Add one: /cron add "name" --schedule "0 9 * * *" --prompt "..." --deliver local';
+        return jobs.map((j) => {
+          const next = new Date(j.nextRunAt).toLocaleString();
+          const status = j.lastStatus ? ` [${j.lastStatus}]` : '';
+          const enabled = j.enabled ? '' : ' (paused)';
+          return `  ${j.enabled ? '●' : '○'} ${j.name}${enabled}${status} — next: ${next}\n    schedule: ${j.schedule} → deliver: ${j.deliver}\n    ${j.prompt.slice(0, 80)}${j.prompt.length > 80 ? '...' : ''}`;
+        }).join('\n\n');
+      }
+
+      if (sub === 'add') {
+        // /cron add "name" --schedule "..." --prompt "..." --deliver local
+        const nameMatch = args.match(/add\s+"([^"]+)"/);
+        const schedMatch = args.match(/--schedule\s+"([^"]+)"/);
+        const promptMatch = args.match(/--prompt\s+"([^"]+)"/);
+        const deliverMatch = args.match(/--deliver\s+(\S+)/);
+        if (!nameMatch || !schedMatch || !promptMatch) {
+          return 'Usage: /cron add "job-name" --schedule "0 9 * * *" --prompt "..." --deliver local';
+        }
+        const parsed = CreateJobSchema.safeParse({
+          name: nameMatch[1],
+          schedule: schedMatch[1],
+          prompt: promptMatch[1],
+          deliver: deliverMatch?.[1] ?? 'local',
+        });
+        if (!parsed.success) return `Invalid: ${parsed.error.message}`;
+        const job = createJob(parsed.data);
+        return `Cron job created: ${job.name}\nNext run: ${new Date(job.nextRunAt).toLocaleString()}\nDeliver: ${job.deliver}`;
+      }
+
+      if (sub === 'pause' || sub === 'resume') {
+        const name = parts[1];
+        if (!name) return `Usage: /cron ${sub} <name>`;
+        const jobs = listJobs();
+        const job = jobs.find((j) => j.name === name);
+        if (!job) return `Job not found: ${name}`;
+        enableJob(job.id, sub === 'resume');
+        return `Job ${sub}d: ${name}`;
+      }
+
+      if (sub === 'delete') {
+        const name = parts[1];
+        if (!name) return 'Usage: /cron delete <name>';
+        const jobs = listJobs();
+        const job = jobs.find((j) => j.name === name);
+        if (!job) return `Job not found: ${name}`;
+        deleteJob(job.id);
+        return `Job deleted: ${name}`;
+      }
+
+      return 'Usage: /cron [list|add|pause|resume|delete]';
+    } catch (err) {
+      return `Cron not available: ${err instanceof Error ? err.message : String(err)}\nInstall with: npm install -g @agent-os-core/cron`;
     }
   },
 

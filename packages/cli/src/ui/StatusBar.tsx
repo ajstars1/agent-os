@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { homedir } from 'node:os';
+import { formatCost } from '@agent-os-core/shared';
 
 interface Props {
   status: 'idle' | 'thinking' | 'streaming';
@@ -13,6 +14,12 @@ interface Props {
   cwd: string;
   skillSuggestions?: string[];
   isPlanning?: boolean;
+  /** USD cost for the last turn. */
+  lastTurnCost?: number;
+  /** Cumulative USD cost for the session. */
+  sessionCost?: number;
+  /** Number of active subagents (0 = none). */
+  activeSubagents?: number;
 }
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -55,6 +62,9 @@ export function StatusBar({
   cwd,
   skillSuggestions = [],
   isPlanning = false,
+  lastTurnCost,
+  sessionCost,
+  activeSubagents = 0,
 }: Props): React.ReactElement {
   const isActive = status !== 'idle';
   const spinnerFrame = useSpinner(isActive);
@@ -86,6 +96,17 @@ export function StatusBar({
             {hasTokens && (
               <Text dimColor>
                 {'  '}{inputTokens.toLocaleString()}{'↑ '}{outputTokens.toLocaleString()}{'↓  '}{finalSec}{'s'}
+                {lastTurnCost !== undefined && lastTurnCost > 0 ? (
+                  <Text dimColor>{'  ~'}{formatCost(lastTurnCost)}</Text>
+                ) : null}
+                {sessionCost !== undefined && sessionCost > 0 ? (
+                  <Text dimColor>{'  ['}{formatCost(sessionCost)}{' total]'}</Text>
+                ) : null}
+              </Text>
+            )}
+            {activeSubagents > 0 && (
+              <Text color="cyan" dimColor>
+                {'  ⚡'}{activeSubagents}{' agent'}{activeSubagents !== 1 ? 's' : ''}
               </Text>
             )}
             {skillSuggestions.length > 0 && (

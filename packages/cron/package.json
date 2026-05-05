@@ -1,0 +1,35 @@
+{
+  "name": "@agent-os-core/cron",
+  "version": "0.1.0",
+  "description": "Cron scheduler for agent-os — schedule AI tasks with delivery to any platform.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@agent-os-core/shared": "0.1.4",
+    "better-sqlite3": "^11.7.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.3"
+  },
+  "peerDependencies": {
+    "@agent-os-core/shared": ">=0.1.4"
+  }
+}

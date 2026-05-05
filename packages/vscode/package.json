@@ -1,0 +1,101 @@
+{
+  "name": "agent-os-vscode",
+  "displayName": "AgentOS",
+  "description": "AgentOS AI assistant — chat panel, file context, inline suggestions",
+  "version": "0.1.0",
+  "publisher": "agent-os",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["AI", "Chat"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agent-os",
+          "title": "AgentOS",
+          "icon": "assets/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "agent-os": [
+        {
+          "type": "webview",
+          "id": "agentOS.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentOS.openChat",
+        "title": "AgentOS: Open Chat"
+      },
+      {
+        "command": "agentOS.askAboutFile",
+        "title": "AgentOS: Ask About Current File"
+      },
+      {
+        "command": "agentOS.explainSelection",
+        "title": "AgentOS: Explain Selection"
+      },
+      {
+        "command": "agentOS.reconnect",
+        "title": "AgentOS: Reconnect to Bridge"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "agentOS.explainSelection",
+          "when": "editorHasSelection",
+          "group": "agentOS"
+        },
+        {
+          "command": "agentOS.askAboutFile",
+          "group": "agentOS"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AgentOS",
+      "properties": {
+        "agentOS.bridgeUrl": {
+          "type": "string",
+          "default": "http://localhost:7878",
+          "description": "URL of the AgentOS bridge server"
+        },
+        "agentOS.secretFile": {
+          "type": "string",
+          "default": "",
+          "description": "Path to bridge secret file (default: ~/.agent-os/.bridge-secret)"
+        },
+        "agentOS.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to the bridge on startup"
+        },
+        "agentOS.includeFileContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically include current file context in messages"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "[ -d node_modules/@types/vscode ] && tsc || echo 'Skipping vscode build: @types/vscode not installed. Run: cd packages/vscode && npm install'",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "package": "vsce package",
+    "install:deps": "npm install",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "@agent-os-core/gateway",
+  "version": "0.1.0",
+  "description": "Multi-platform messaging gateway for agent-os — Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "aos-gateway": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "node --watch dist/bin.js",
+    "start": "node dist/bin.js",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@agent-os-core/core": "0.1.5",
+    "@agent-os-core/shared": "0.1.4",
+    "@slack/bolt": "^3.22.0",
+    "discord.js": "^14.17.0",
+    "matrix-js-sdk": "^35.0.0",
+    "nodemailer": "^6.9.17",
+    "imapflow": "^1.0.174",
+    "dotenv": "^16.4.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/nodemailer": "^6.4.17",
+    "typescript": "^5.7.3"
+  }
+}

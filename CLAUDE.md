@@ -16,10 +16,13 @@ Personal open-source AI agent system — TypeScript/Node.js Turborepo monorepo.
 - Try/catch with typed errors on all async operations.
 
 ## Package Structure
-- `packages/shared` — types, config, logger
-- `packages/core` — engine, LLM clients, memory, MCP tools, skills
-- `packages/cli` — terminal REPL adapter
-- `packages/discord` — Discord bot adapter
+- `packages/shared` — types, config, logger, pricing, settings hierarchy
+- `packages/core` — engine, LLM clients, memory, MCP tools, skills, hooks, subagents
+- `packages/cli` — terminal REPL adapter (`aos`)
+- `packages/gateway` — multi-platform messaging daemon (`aos-gateway`): Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email
+- `packages/browser` — Playwright browser automation (local + Browser Use cloud)
+- `packages/cron` — cron scheduler with SQLite persistence and platform delivery
+- `packages/discord` — legacy Discord-only adapter (superseded by gateway)
 
 ## Build Order
-shared → core → cli / discord (parallel)
+shared → core → [cli, gateway, browser, cron, discord, web] (parallel)

@@ -8,12 +8,35 @@ import type {
   Conversation,
   Config,
 } from '@agent-os-core/shared';
+import { estimateCost } from '@agent-os-core/shared';
+import { HookRunner } from './hooks/index.js';
+import { delegateTask, batchDelegate, getActiveSubagents } from './agents/delegate.js';
+import { searchAndSummarise } from './memory/fts5.js';
+import { getUserModelBlock, handleUserModelTool, extractAndUpdateUserModel } from './memory/user-model.js';
+import { compressHistory, getContextLimit } from './memory/context-compressor.js';
+import { shouldRunCurator, runCurator } from './skills/curator.js';
+
+// Browser tools — optional, loaded only if @agent-os-core/browser is installed
+let _browserHandlers: Record<string, (i: Record<string, unknown>) => Promise<import('@agent-os-core/shared').ToolResult>> | null = null;
+let _browserDefs: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> | null = null;
+
+async function tryLoadBrowser(): Promise<void> {
+  try {
+    const mod = await import('@agent-os-core/browser' as string);
+    _browserHandlers = mod.BROWSER_HANDLERS as typeof _browserHandlers;
+    _browserDefs = mod.BROWSER_TOOL_DEFINITIONS as typeof _browserDefs;
+  } catch {
+    // Browser package not installed — browser tools unavailable
+  }
+}
 import type { IMemoryStore } from './memory/interface.js';
 import type { SkillLoader } from './skills/loader.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { ClaudeClient } from './llm/claude.js';
 import type { GeminiClient, GeminiVariant } from './llm/gemini.js';
-import type { LLMRouter } from './llm/router.js';
+import type { LLMRouter, RoutedProvider } from './llm/router.js';
+import type { OpenRouterClient } from './llm/openrouter.js';
+import type { OllamaClient } from './llm/ollama.js';
 import type { UnifiedMessage } from './llm/base.js';
 import type { Logger } from '@agent-os-core/shared';
 import type { AgentProfile } from './agents/types.js';
@@ -31,6 +54,8 @@ import { ToolExecutor } from './agents/tool-executor.js';
 import { PlanningManager, TaskRegistry } from './planning.js';
 import { TodoStore, TODO_TOOL_DEFINITION, makeTodoHandler } from './tools/todo.js';
 import { maybeAutoTitle } from './memory/title-generator.js';
+import { handleAnalyzeImage, handleDescribeScreenshot, VISION_TOOL_DEFINITIONS } from './tools/vision.js';
+import { handleGenerateImage, IMAGEGEN_TOOL_DEFINITION } from './tools/imagegen.js';
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -113,6 +138,9 @@ export class AgentEngine {
   public readonly planningManager: PlanningManager;
   public readonly taskRegistry: TaskRegistry;
   private readonly _todoStore: TodoStore;
+  private readonly _hooks: HookRunner;
+  /** Cumulative USD cost for this engine instance (session). */
+  private _sessionCostUsd = 0;
 
   constructor(
     private readonly config: Config,
@@ -122,6 +150,8 @@ export class AgentEngine {
     private readonly claude: ClaudeClient | null,
     private readonly gemini: GeminiClient | null,
     private readonly router: LLMRouter,
+    private readonly openrouter: OpenRouterClient | null = null,
+    private readonly ollama: OllamaClient | null = null,
     private readonly logger: Logger,
     private readonly hamRetriever?: HAMRetriever,
     private readonly hamStore?: TieredStore,
@@ -136,12 +166,26 @@ export class AgentEngine {
   ) {
     this._orchestrator = new Orchestrator(claude, gemini, episodicStore, logger, tools);
     this._todoStore = new TodoStore();
+    this._hooks = new HookRunner(config.hooks ?? [], logger);
+
+    // Async browser tool registration (non-blocking)
+    tryLoadBrowser().then(() => {
+      if (_browserHandlers && _browserDefs) {
+        for (const def of _browserDefs) {
+          const handler = _browserHandlers[def.name];
+          if (handler) {
+            tools.register(def as import('@agent-os-core/shared').ToolDefinition, handler);
+          }
+        }
+        logger.info('[Engine] Browser tools registered');
+      }
+    }).catch(() => {});
 
     // ToolExecutor is now generalized — we can create it dynamically or keep one for each
     if (claude) {
-      this._toolExecutor = new ToolExecutor(claude, tools, logger);
+      this._toolExecutor = new ToolExecutor(claude, tools, logger, this._hooks);
     } else if (gemini) {
-      this._toolExecutor = new ToolExecutor(gemini, tools, logger);
+      this._toolExecutor = new ToolExecutor(gemini, tools, logger, this._hooks);
     }
 
     this.taskRegistry = new TaskRegistry();
@@ -173,6 +217,166 @@ export class AgentEngine {
     // Register todo tool
     this.tools.register(TODO_TOOL_DEFINITION, makeTodoHandler(this._todoStore));
 
+    // Register session search tool
+    this.tools.register(
+      {
+        name: 'session_search',
+        description: `Search across all past conversations for relevant information.
+Use when the user asks "what did we work on last week?", "do you remember when we discussed X?",
+or any question referencing past sessions.
+Returns a summary of the most relevant past messages.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'What to search for in conversation history' },
+            role: { type: 'string', enum: ['user', 'assistant'], description: 'Filter by message role (optional)' },
+            matchCount: { type: 'number', description: 'Max results to retrieve (default 10)', default: 10 },
+          },
+          required: ['query'],
+        },
+      },
+      async (input) => {
+        if (!this.episodicStore) {
+          return { toolCallId: '', content: 'Session search not available (no episodic store)', isError: true };
+        }
+        try {
+          // Access the underlying SQLite DB through the episodic store
+          const db = (this.episodicStore as unknown as { db: import('better-sqlite3').Database }).db;
+          if (!db) return { toolCallId: '', content: 'Session search not available', isError: true };
+          const result = await searchAndSummarise(db, String(input['query']), {
+            role: input['role'] as 'user' | 'assistant' | undefined,
+            matchCount: typeof input['matchCount'] === 'number' ? input['matchCount'] : 10,
+            anthropicKey: this.config.ANTHROPIC_API_KEY,
+          });
+          return {
+            toolCallId: '',
+            content: `${result.summary}\n\n(${result.matchCount} messages matched "${result.query}")`,
+            isError: false,
+          };
+        } catch (err) {
+          return { toolCallId: '', content: String(err), isError: true };
+        }
+      },
+    );
+
+    // Register user profile tool
+    this.tools.register(
+      {
+        name: 'user_profile',
+        description: `Read or update the persistent user profile (USER.md).
+Use to remember long-term facts about the user: their role, preferences, active projects, frustrations.
+These facts persist across ALL sessions — not just the current conversation.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['read', 'add', 'replace', 'remove'],
+              description: 'read: show profile | add: add fact | replace: update fact | remove: delete fact',
+            },
+            key: { type: 'string', description: 'Fact key (e.g. "Current project", "Preferred stack")' },
+            value: { type: 'string', description: 'Fact value (for add/replace actions)' },
+          },
+          required: ['action'],
+        },
+      },
+      (input) => {
+        const result = handleUserModelTool(
+          input['action'] as 'read' | 'add' | 'replace' | 'remove',
+          input['key'] as string | undefined,
+          input['value'] as string | undefined,
+        );
+        return Promise.resolve({ toolCallId: '', ...result });
+      },
+    );
+
+    // Register delegation tools (subagent spawning)
+    this.tools.register(
+      {
+        name: 'delegate_task',
+        description: `Spawn an isolated subagent to handle a specific goal in parallel.
+The subagent gets a fresh context, a restricted toolset, and works autonomously.
+Use this to:
+- Research while coding ("research X, then I'll implement it")
+- Run multiple independent tasks in parallel
+- Isolate risky or exploratory work from the main context
+
+Returns the subagent's full output when complete.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            goal: { type: 'string', description: 'Clear, specific goal for the subagent' },
+            tools: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Tool names the subagent may use (empty = all safe tools)',
+            },
+            maxIterations: {
+              type: 'number',
+              description: 'Max tool-call iterations (default 20, max 40)',
+              default: 20,
+            },
+          },
+          required: ['goal'],
+        },
+      },
+      async (input) => {
+        const client = this.claude ?? this.gemini;
+        if (!client) return { toolCallId: '', content: 'No LLM client configured', isError: true };
+        return delegateTask(
+          {
+            goal: String(input['goal']),
+            tools: Array.isArray(input['tools']) ? input['tools'].map(String) : [],
+            maxIterations: typeof input['maxIterations'] === 'number' ? Math.min(40, input['maxIterations']) : 20,
+          },
+          client,
+          this.tools,
+          this.logger,
+        );
+      },
+    );
+
+    this.tools.register(
+      {
+        name: 'batch_delegate',
+        description: `Spawn multiple subagents in parallel, each with its own goal.
+Returns all results combined when every agent completes.
+Use when you have 2-10 independent tasks that can run concurrently.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tasks: {
+              type: 'array',
+              description: 'Array of { goal, tools? } objects (max 10)',
+              items: {
+                type: 'object',
+                properties: {
+                  goal: { type: 'string' },
+                  tools: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['goal'],
+              },
+            },
+            maxIterations: { type: 'number', default: 20 },
+          },
+          required: ['tasks'],
+        },
+      },
+      async (input) => {
+        const client = this.claude ?? this.gemini;
+        if (!client) return { toolCallId: '', content: 'No LLM client configured', isError: true };
+        const tasks = Array.isArray(input['tasks'])
+          ? (input['tasks'] as Array<{ goal: string; tools?: string[] }>)
+          : [];
+        return batchDelegate(
+          { tasks, maxIterations: typeof input['maxIterations'] === 'number' ? input['maxIterations'] : 20 },
+          client,
+          this.tools,
+          this.logger,
+        );
+      },
+    );
+
     // Register planning tools
     this.tools.register({
       name: 'propose_plan',
@@ -193,6 +397,19 @@ export class AgentEngine {
         isError: false,
       };
     });
+
+    // Register vision tools
+    const anthropicKey = this.config.ANTHROPIC_API_KEY;
+    for (const def of VISION_TOOL_DEFINITIONS) {
+      const defCopy = def;
+      this.tools.register(defCopy as import('@agent-os-core/shared').ToolDefinition, (input) => {
+        if (defCopy.name === 'analyze_image') return handleAnalyzeImage(input as Record<string, unknown>, anthropicKey);
+        return handleDescribeScreenshot(input as Record<string, unknown>, anthropicKey);
+      });
+    }
+
+    // Register image generation tool
+    this.tools.register(IMAGEGEN_TOOL_DEFINITION as import('@agent-os-core/shared').ToolDefinition, handleGenerateImage);
   }
 
   getOrCreateConversation(channel: ChannelType, channelId: string): Conversation {
@@ -390,10 +607,25 @@ export class AgentEngine {
     }
   }
 
+  /** Expose the hook runner so tool executors can call toolUsePre/Post hooks. */
+  get hooks(): HookRunner { return this._hooks; }
+
+  /** Current session cumulative cost (USD). */
+  get sessionCostUsd(): number { return this._sessionCostUsd; }
+
+  /** Number of currently active subagents (for UI display). */
+  get activeSubagentCount(): number { return getActiveSubagents().length; }
+
   async *chat(input: EngineInput): AsyncGenerator<StreamChunk> {
     // Reset the idle timer on every user message so the sleep cycle only fires
     // after a genuine period of inactivity.
     this.resetIdleTimer(input.conversationId);
+
+    // Fire messageReceived hook
+    const msgHook = await this._hooks.fire('messageReceived', { message: input.message });
+    if (msgHook.promptAddition) {
+      input = { ...input, message: `${msgHook.promptAddition}\n\n${input.message}` };
+    }
 
     // If in Planning Mode, check for approval/rejection keywords
     if (this.planningManager.getMode() === 'plan') {
@@ -411,9 +643,15 @@ export class AgentEngine {
       }
     }
 
+    // Extract inline model if present (e.g. "or:gpt-4o ..." → orModel="gpt-4o")
+    const inlineModel = this.router.extractInlineModel(input.message);
     const cleanedMessage = this.router.stripPrefix(input.message);
     const parsedModel = this.router.parseForceModel((input.forceModel ?? input.agentProfile?.defaultModel) as string | undefined);
-    const provider = await this.router.route(input.message, (parsedModel?.provider ?? input.forceModel) as LLMProvider | undefined);
+    const provider = await this.router.route(input.message, (parsedModel?.provider ?? input.forceModel) as LLMProvider | undefined) as RoutedProvider;
+
+    // Carry inline model through to client options
+    const orModel = inlineModel.orModel ?? parsedModel?.orModel;
+    const olModel = inlineModel.olModel ?? parsedModel?.olModel;
 
     // Auto-select Gemini variant when none is explicitly specified
     let geminiVariant = parsedModel?.variant;
@@ -423,7 +661,11 @@ export class AgentEngine {
     }
 
     // Emit provider + resolved model so the UI can show which variant is running
-    yield { type: 'provider', provider, model: provider === 'gemini' ? `gemini:${geminiVariant ?? 'flash'}` : 'claude' };
+    const resolvedModel = provider === 'gemini' ? `gemini:${geminiVariant ?? 'flash'}`
+      : provider === 'openrouter' ? `or:${orModel ?? 'gpt-4o-mini'}`
+      : provider === 'ollama' ? `ol:${olModel ?? 'llama3.2'}`
+      : 'claude';
+    yield { type: 'provider', provider, model: resolvedModel };
 
     // Ensure conversation row exists before inserting messages (web route passes a bare UUID)
     this.memory.ensureConversation(input.conversationId);
@@ -475,12 +717,19 @@ When working with files:
       companionBlock = hamResult.activeMemory;
     }
 
+    // Inject USER.md snapshot (frozen — doesn't change mid-session, preserves prefix cache)
+    const userModelBlock = getUserModelBlock();
+
     let systemPrompt = input.agentProfile?.systemPrompt
       ? `${CORE_SYSTEM_PROMPT}\n\n${input.agentProfile.systemPrompt}\n\n---\n\n${baseContext}`
       : `${CORE_SYSTEM_PROMPT}\n\n---\n\n${baseContext}`;
 
     if (companionBlock) {
       systemPrompt = `${companionBlock}\n\n---\n\n${systemPrompt}`;
+    }
+
+    if (userModelBlock) {
+      systemPrompt = `${userModelBlock}\n\n---\n\n${systemPrompt}`;
     }
 
     if (hamResult) {
@@ -512,8 +761,13 @@ When working with files:
       (forceProvider !== undefined && forceProvider !== 'auto') ||
       this.config.DEFAULT_MODEL !== 'auto' ||
       input.message.startsWith('cc:') ||
-      input.message.startsWith('g:');
-    const userModelChoice = isExplicitChoice ? provider as 'claude' | 'gemini' : undefined;
+      input.message.startsWith('g:') ||
+      input.message.startsWith('or:') ||
+      input.message.startsWith('ol:');
+    // Orchestrator only understands claude/gemini — for or:/ol: fall back to claude path
+    const userModelChoice = isExplicitChoice
+      ? (provider === 'openrouter' || provider === 'ollama' ? 'claude' : provider as 'claude' | 'gemini')
+      : undefined;
 
     let orchestratorHandled = false;
     if (cleanedMessage.length > 40 && !input.agentProfile) {
@@ -553,10 +807,16 @@ When working with files:
     }
 
     if (!orchestratorHandled) {
-      const client = provider === 'gemini' ? this.gemini : this.claude;
+      // Select the appropriate LLM client
+      const client =
+        provider === 'gemini' ? this.gemini
+        : provider === 'openrouter' ? this.openrouter
+        : provider === 'ollama' ? this.ollama
+        : this.claude;
+
       if (client) {
-        const executor = new ToolExecutor(client, this.tools, this.logger);
-        const unifiedMessages: UnifiedMessage[] = history
+        const executor = new ToolExecutor(client, this.tools, this.logger, this._hooks);
+        let unifiedMessages: UnifiedMessage[] = history
           .slice(0, -1)
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m) => ({
@@ -564,6 +824,29 @@ When working with files:
             content: m.content,
           }));
         unifiedMessages.push({ role: 'user', content: cleanedMessage });
+
+        // Context compression — shrink history if approaching model limit
+        const contextLimitKey = provider === 'gemini' ? `gemini:${geminiVariant ?? 'flash'}`
+          : provider === 'openrouter' || provider === 'ollama' ? 'claude' // use Claude limit as proxy
+          : 'claude';
+        const contextLimit = getContextLimit(contextLimitKey);
+        const { messages: compressed, result: compressionResult } = await compressHistory(
+          unifiedMessages,
+          contextLimit,
+          this.logger,
+          this.config.GOOGLE_API_KEY,
+        );
+        if (compressionResult.compressed) {
+          unifiedMessages = compressed;
+          yield { type: 'status', content: `Context compressed: saved ~${compressionResult.savedTokens} tokens` };
+        }
+
+        // Build extra options for OR/OL model selection
+        const llmOptions: Record<string, unknown> =
+          provider === 'gemini' ? { variant: geminiVariant, useSearch: input.useSearch }
+          : provider === 'openrouter' ? { orModel }
+          : provider === 'ollama' ? { olModel }
+          : {};
 
         yield* collectChunks(
           executor.runLoop(
@@ -579,11 +862,14 @@ When working with files:
                 tokens,
               });
             },
-            provider === 'gemini' ? { variant: geminiVariant, useSearch: input.useSearch } : {}
+            llmOptions,
           )
         );
       } else {
-        yield { type: 'error', content: `${provider} client not configured.` };
+        const hint = provider === 'openrouter' ? ' (set OPENROUTER_API_KEY)'
+          : provider === 'ollama' ? ' (run: ollama serve)'
+          : '';
+        yield { type: 'error', content: `${provider} client not configured.${hint}` };
       }
     }
 
@@ -619,6 +905,23 @@ When working with files:
         input.conversationId,
         'default',
       );
+    }
+
+    // ── responseDone hook ─────────────────────────────────────────────────
+    this._hooks.fire('responseDone', { message: fullResponse }).catch(() => {});
+
+    // ── USER.md async extraction (non-blocking) ────────────────────────────
+    if (fullResponse && this.config.ANTHROPIC_API_KEY) {
+      extractAndUpdateUserModel(cleanedMessage, fullResponse, this.logger, this.config.ANTHROPIC_API_KEY)
+        .catch(() => {});
+    }
+
+    // ── Skill curator idle check ───────────────────────────────────────────
+    if (shouldRunCurator(Date.now() - 3 * 60 * 60 * 1000)) { // if last activity > 3h ago
+      runCurator({
+        anthropicKey: this.config.ANTHROPIC_API_KEY,
+        logger: this.logger,
+      }).catch(() => {});
     }
 
     // ── L4 auto-save — cache factual responses worth storing ───────────────

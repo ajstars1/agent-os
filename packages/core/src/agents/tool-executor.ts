@@ -1,6 +1,7 @@
 import type { LLMClient, UnifiedMessage } from '../llm/base.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { Logger, ToolResult, StreamChunk, ToolCall } from '@agent-os-core/shared';
+import type { HookRunner } from '../hooks/runner.js';
 
 const MAX_TOOL_ITERATIONS = 40;
 
@@ -9,6 +10,7 @@ export class ToolExecutor {
     private readonly client: LLMClient,
     private readonly tools: ToolRegistry,
     private readonly logger: Logger,
+    private readonly hookRunner?: HookRunner,
   ) {}
 
   public async *runLoop(
@@ -51,8 +53,40 @@ export class ToolExecutor {
       const toolResults: ToolResult[] = [];
       for (const toolCall of pendingToolCalls) {
         this.logger.debug({ tool: toolCall.name }, 'ToolExecutor calling tool');
+
+        // toolUsePre hook — can block the call
+        if (this.hookRunner) {
+          const pre = await this.hookRunner.fire('toolUsePre', {
+            toolName: toolCall.name,
+            toolInput: toolCall.input,
+          });
+          if (pre.blocked) {
+            const blocked: ToolResult = {
+              toolCallId: toolCall.id,
+              content: `Tool call blocked by hook: ${pre.output ?? 'no reason given'}`,
+              isError: true,
+            };
+            toolResults.push(blocked);
+            yield { type: 'hook_blocked', content: pre.output ?? `Hook blocked ${toolCall.name}` };
+            yield { type: 'tool_result', toolResult: blocked };
+            continue;
+          }
+        }
+
         const result = await this.tools.callTool(toolCall.name, toolCall.input);
         result.toolCallId = toolCall.id;
+
+        // toolUsePost / toolUseError hooks
+        if (this.hookRunner) {
+          const event = result.isError ? 'toolUseError' : 'toolUsePost';
+          this.hookRunner.fire(event, {
+            toolName: toolCall.name,
+            toolInput: toolCall.input,
+            output: result.content,
+            isError: result.isError,
+          }).catch(() => {});
+        }
+
         toolResults.push(result);
         yield { type: 'tool_result', toolResult: result };
       }
