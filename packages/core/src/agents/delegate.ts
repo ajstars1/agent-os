@@ -44,6 +44,15 @@ const ALWAYS_BLOCKED = new Set(['delegate_task']);
 /** Maximum subagent nesting depth (parent → child → grandchild = depth 2). */
 const MAX_DEPTH = 3;
 
+/** GenZ-friendly worker names, assigned sequentially to subagents. */
+const WORKER_NAMES = ['zara', 'echo', 'flux', 'byte', 'pixel', 'rio', 'sol', 'ash', 'kai', 'lyra'];
+let _workerNameIdx = 0;
+function nextWorkerName(): string {
+  const name = WORKER_NAMES[_workerNameIdx % WORKER_NAMES.length] ?? `w${_workerNameIdx}`;
+  _workerNameIdx++;
+  return name;
+}
+
 export interface DelegateInput {
   goal: string;
   /** Restrict subagent to only these tools. Empty = all allowed tools. */
@@ -70,7 +79,8 @@ export async function delegateTask(
     };
   }
 
-  const taskId = `subagent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const workerName = nextWorkerName();
+  const taskId = workerName;
 
   // Build restricted tool list
   const allTools = registry.getTools();
@@ -102,7 +112,7 @@ Rules:
   logger.info({ taskId, goal, depth: _depth }, '[Delegate] Subagent spawned');
 
   try {
-    const executor = new ToolExecutor(client, restrictedRegistry, logger);
+    const executor = new ToolExecutor(client, restrictedRegistry, logger, undefined, workerName);
     // Override max iterations
     const originalRunLoop = executor.runLoop.bind(executor);
     let output = '';

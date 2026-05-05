@@ -1,7 +1,11 @@
-import React from 'react';
+/**
+ * StatusBar v2 — minimal bottom bar. WorkerRoom handles live agent state.
+ * Shows: cwd when idle · model + spinner when active · skill hints · planning banner.
+ */
+
+import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import { homedir } from 'node:os';
-import { formatCost } from '@agent-os-core/shared';
 
 interface Props {
   status: 'idle' | 'thinking' | 'streaming';
@@ -10,46 +14,58 @@ interface Props {
   inputTokens: number;
   outputTokens: number;
   finalElapsedMs: number;
-  activeStartMs: number;           // non-zero when a request is in-flight
+  activeStartMs: number;
   cwd: string;
   skillSuggestions?: string[];
   isPlanning?: boolean;
-  /** USD cost for the last turn. */
   lastTurnCost?: number;
-  /** Cumulative USD cost for the session. */
   sessionCost?: number;
-  /** Number of active subagents (0 = none). */
   activeSubagents?: number;
 }
 
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+// ─── Hooks ────────────────────────────────────────────────────────────────────
+
+const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 function useSpinner(active: boolean): string {
-  const [frame, setFrame] = React.useState(0);
-  React.useEffect(() => {
+  const [f, setF] = useState(0);
+  useEffect(() => {
     if (!active) return;
-    const id = setInterval(() => setFrame((f) => (f + 1) % SPINNER_FRAMES.length), 80);
+    const id = setInterval(() => setF((n) => (n + 1) % FRAMES.length), 80);
     return () => clearInterval(id);
   }, [active]);
-  return active ? (SPINNER_FRAMES[frame] ?? '⠋') : '';
+  return active ? (FRAMES[f] ?? '⠋') : '';
 }
 
-/** Ticks every second while active, returns human-readable elapsed like "3s" or "1m 12s". */
-function useLiveElapsed(activeStartMs: number): string {
-  const [ms, setMs] = React.useState(0);
-  React.useEffect(() => {
-    if (!activeStartMs) { setMs(0); return; }
-    const tick = (): void => setMs(Date.now() - activeStartMs);
+function useLiveElapsed(startMs: number): string {
+  const [ms, setMs] = useState(0);
+  useEffect(() => {
+    if (!startMs) { setMs(0); return; }
+    const tick = (): void => setMs(Date.now() - startMs);
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [activeStartMs]);
-
+  }, [startMs]);
   if (!ms) return '';
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  const s = Math.floor(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function providerColor(p: string): string {
+  if (p === 'gemini')     return 'green';
+  if (p === 'openrouter') return 'yellow';
+  if (p === 'ollama')     return 'magenta';
+  return 'blueBright';
+}
+
+function fmtCost(usd: number): string {
+  if (usd < 0.001) return `$${(usd * 1000).toFixed(2)}m`;
+  return `$${usd.toFixed(3)}`;
+}
+
+// ─── StatusBar ────────────────────────────────────────────────────────────────
 
 export function StatusBar({
   status,
@@ -64,68 +80,62 @@ export function StatusBar({
   isPlanning = false,
   lastTurnCost,
   sessionCost,
-  activeSubagents = 0,
 }: Props): React.ReactElement {
   const isActive = status !== 'idle';
-  const spinnerFrame = useSpinner(isActive);
-  const liveElapsed = useLiveElapsed(isActive ? activeStartMs : 0);
+  const spinner  = useSpinner(isActive);
+  const elapsed  = useLiveElapsed(isActive ? activeStartMs : 0);
   const cwdShort = cwd.replace(homedir(), '~');
-  const finalSec = (finalElapsedMs / 1000).toFixed(1);
-  const hasTokens = inputTokens > 0 || outputTokens > 0;
-  const providerColor = provider === 'gemini' ? 'green' : 'blue';
-  const modelLabel = resolvedModel ?? provider;
-  const statusLabel = status === 'thinking' ? 'thinking…' : 'responding…';
+  const color    = providerColor(provider);
+  const model    = resolvedModel ?? provider;
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box
-        borderStyle="round"
-        borderColor="dim"
-        paddingX={1}
-      >
+      {/* Planning banner */}
+      {isPlanning && (
+        <Box paddingX={2} marginBottom={1} borderStyle="bold" borderColor="yellow">
+          <Text bold color="yellow"> plan mode  </Text>
+          <Text dimColor>type </Text>
+          <Text color="green" bold>approve</Text>
+          <Text dimColor> or </Text>
+          <Text color="red" bold>reject</Text>
+        </Box>
+      )}
+
+      {/* Main bar */}
+      <Box paddingX={1}>
         {isActive ? (
+          /* Active — spinner + model + elapsed */
           <Box>
-            <Text color="yellow">{spinnerFrame} </Text>
-            <Text color={providerColor} bold>{modelLabel}</Text>
-            <Text dimColor>{'  '}{statusLabel}</Text>
-            {liveElapsed ? <Text dimColor>{'  · '}{liveElapsed}</Text> : null}
+            <Text color={color}>{spinner} </Text>
+            <Text color={color} bold>{model}</Text>
+            <Text dimColor>
+              {'  ·  '}
+              {status === 'streaming' ? 'responding' : 'thinking'}
+              {elapsed ? `  ${elapsed}` : ''}
+            </Text>
           </Box>
         ) : (
-          <Box>
+          /* Idle — cwd + last turn stats */
+          <Box flexWrap="wrap">
             <Text dimColor>{cwdShort}</Text>
-            {hasTokens && (
+            {(inputTokens > 0 || outputTokens > 0) && (
               <Text dimColor>
-                {'  '}{inputTokens.toLocaleString()}{'↑ '}{outputTokens.toLocaleString()}{'↓  '}{finalSec}{'s'}
-                {lastTurnCost !== undefined && lastTurnCost > 0 ? (
-                  <Text dimColor>{'  ~'}{formatCost(lastTurnCost)}</Text>
-                ) : null}
-                {sessionCost !== undefined && sessionCost > 0 ? (
-                  <Text dimColor>{'  ['}{formatCost(sessionCost)}{' total]'}</Text>
-                ) : null}
-              </Text>
-            )}
-            {activeSubagents > 0 && (
-              <Text color="cyan" dimColor>
-                {'  ⚡'}{activeSubagents}{' agent'}{activeSubagents !== 1 ? 's' : ''}
-              </Text>
-            )}
-            {skillSuggestions.length > 0 && (
-              <Text dimColor>
-                {'  💡 '}
-                {skillSuggestions.join('  ')}
+                {'  ·  '}
+                {inputTokens.toLocaleString()}↑ {outputTokens.toLocaleString()}↓
+                {'  '}
+                {(finalElapsedMs / 1000).toFixed(1)}s
+                {lastTurnCost && lastTurnCost > 0 ? `  ${fmtCost(lastTurnCost)}` : ''}
+                {sessionCost && sessionCost > 0 ? `  [${fmtCost(sessionCost)} session]` : ''}
               </Text>
             )}
           </Box>
         )}
       </Box>
-      {isPlanning && (
-        <Box paddingX={1} marginTop={1} borderStyle="bold" borderColor="yellow">
-          <Text color="yellow" bold inverse> PLANNING MODE </Text>
-          <Text color="yellow">  Review the proposed plan and type </Text>
-          <Text color="green" bold>"Approve"</Text>
-          <Text color="yellow"> to proceed or </Text>
-          <Text color="red" bold>"Reject"</Text>
-          <Text color="yellow"> to cancel.</Text>
+
+      {/* Skill hints — idle only */}
+      {!isActive && skillSuggestions.length > 0 && (
+        <Box paddingX={1} marginTop={0}>
+          <Text dimColor>{'  💡 '}{skillSuggestions.join('  ')}</Text>
         </Box>
       )}
     </Box>

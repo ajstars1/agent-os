@@ -1,20 +1,39 @@
+/**
+ * AgentOS CLI — v2 UI
+ *
+ * Design principles:
+ *  - Breathing room: generous margins, no visual clutter
+ *  - The WorkerRoom panel shows live agent activity during responses
+ *  - Tool calls appear as compact completed events in message history
+ *  - Provider colour-coding: claude=blue, gemini=green, openrouter=yellow, ollama=magenta
+ *  - GenZ agent names: nova (main), zara, echo, flux, byte...
+ */
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Text, useApp, useInput, Static } from 'ink';
 import type { AgentEngine, SkillLoader, TieredStore, HAMCompressor, AgentLoader } from '@agent-os-core/core';
 import { setPermissionCallback } from '@agent-os-core/core';
-import type { LLMProvider, PermissionDecision } from '@agent-os-core/shared';
+import type { AgentUpdate, LLMProvider, PermissionDecision } from '@agent-os-core/shared';
 import { isCommand, handleCommand, type CommandContext } from '../commands/index.js';
 import { PromptInput } from './PromptInput.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { MessageItem, type MessageEntry } from './MessageItem.js';
 import { StatusBar } from './StatusBar.js';
-import { renderMarkdown } from './markdown.js';
+import { WorkerRoom } from './WorkerRoom.js';
+import { MarkdownView } from './MarkdownView.js';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ActiveTool {
   id: string;
   name: string;
   preview: string;
   startMs: number;
+}
+
+interface KeyedMessage {
+  key: string;
+  msg: MessageEntry;
 }
 
 interface Props {
@@ -27,6 +46,8 @@ interface Props {
   model: string;
   feedbackStore?: import('@agent-os-core/core').FeedbackStore;
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function argPreview(input: Record<string, unknown>): string {
   const keys = ['path', 'file_path', 'command', 'pattern', 'url', 'query', 'topic', 'old_string'];
@@ -52,11 +73,7 @@ function resultPreview(content: string): string {
   return t.length > 60 ? t.slice(0, 57) + '…' : t;
 }
 
-// Wrap each message with a stable string key for Static
-interface KeyedMessage {
-  key: string;
-  msg: MessageEntry;
-}
+// ─── App ──────────────────────────────────────────────────────────────────────
 
 export function App({
   engine,
@@ -79,15 +96,23 @@ export function App({
   const [streaming, setStreaming] = useState('');
   const [thinkingText, setThinkingText] = useState('');
   const [activeTools, setActiveTools] = useState<ActiveTool[]>([]);
+
+  // v2: live worker map (agentId → AgentUpdate)
+  const [agentWorkers, setAgentWorkers] = useState<Map<string, AgentUpdate>>(new Map());
+  const workerClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [status, setStatus] = useState<'idle' | 'thinking' | 'streaming'>('idle');
   const [provider, setProvider] = useState('claude');
   const [resolvedModel, setResolvedModel] = useState('');
   const [tokenStats, setTokenStats] = useState({ input: 0, output: 0, elapsed: 0 });
+  const [sessionCostUsd, setSessionCostUsd] = useState(0);
+  const [lastTurnCostUsd, setLastTurnCostUsd] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
   const [lastUserMessage, setLastUserMessage] = useState('');
   const [lastAssistantMessage, setLastAssistantMessage] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const startMsRef = useRef(0);
+  const responseMsRef = useRef(0); // when streaming started
 
   // ── Permission system ──────────────────────────────────────────────────────
   const [pendingPermission, setPendingPermission] = useState<{
@@ -98,13 +123,12 @@ export function App({
   const permissionResolverRef = useRef<((d: PermissionDecision) => void) | null>(null);
 
   const requestPermission = useCallback(
-    (toolName: string, input: Record<string, unknown>): Promise<PermissionDecision> => {
-      return new Promise<PermissionDecision>((resolve) => {
+    (toolName: string, input: Record<string, unknown>): Promise<PermissionDecision> =>
+      new Promise<PermissionDecision>((resolve) => {
         const preview = (typeof input['_preview'] === 'string' ? input['_preview'] : toolName) as string;
         permissionResolverRef.current = resolve;
         setPendingPermission({ toolName, input, preview });
-      });
-    },
+      }),
     [],
   );
 
@@ -115,72 +139,152 @@ export function App({
     resolver?.(decision);
   }, []);
 
-  // Register/unregister permission callback with the tool layer
   useEffect(() => {
     setPermissionCallback(requestPermission);
-    return () => { setPermissionCallback(undefined); };
+    return () => setPermissionCallback(undefined);
   }, [requestPermission]);
 
-  // Ctrl+C: abort stream if running, else exit
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useInput((input, key) => {
-    if (key.ctrl && input === 'c') {
-      if (abortRef.current) {
-        abortRef.current.abort();
-        abortRef.current = null;
-        setStatus('idle');
-        setStreaming('');
-        setActiveTools([]);
-      } else {
-        exit();
-        process.exit(0);
-      }
+    if (key.escape && abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+      setStreaming('');
+      setThinkingText('');
+      setActiveTools([]);
+      clearWorkers();
+      setStatus('idle');
+    } else if (key.escape) {
+      exit();
+      process.exit(0);
     }
   });
 
-  // Post-response skill suggestions from TF-IDF recommender
-  const statusBarSuggestions = React.useMemo(() => {
-    if (status !== 'idle' || !lastUserMessage) return [];
-    try {
-      return skills.recommender.suggest(lastUserMessage, 3, 0.08).map((s) => '/' + s.name);
-    } catch {
-      return [];
-    }
-  }, [status, lastUserMessage, skills]);
-
-  // Extract skill names from system context for command suggestions
-  const skillNames = React.useMemo(() => {
-    const ctx = skills.getSystemContext();
-    return ctx.split('# Skill:')
-      .slice(1)
-      .map((s) => s.split('\n')[0]?.trim() ?? '')
-      .filter(Boolean);
-  }, [skills]);
-
+  // ── Helpers ────────────────────────────────────────────────────────────────
   const addMessage = useCallback((entry: MessageEntry): void => {
     const key = `msg-${msgCountRef.current++}`;
     setMessages((prev) => [...prev, { key, msg: entry }]);
   }, []);
 
-  const handleSubmit = useCallback(async (input: string, _pasteRefs?: unknown[]): Promise<void> => {
+  const clearWorkers = useCallback(() => {
+    if (workerClearTimer.current) clearTimeout(workerClearTimer.current);
+    workerClearTimer.current = setTimeout(() => {
+      setAgentWorkers(new Map());
+    }, 900);
+  }, []);
+
+  const updateWorker = useCallback((update: AgentUpdate) => {
+    setAgentWorkers((prev) => {
+      const next = new Map(prev);
+      next.set(update.agentId, update);
+      return next;
+    });
+  }, []);
+
+  // Skill suggestions for status bar
+  const statusBarSuggestions = React.useMemo(() => {
+    if (status !== 'idle' || !lastUserMessage) return [];
+    try {
+      return skills.recommender.suggest(lastUserMessage, 3, 0.08).map((s) => '/' + s.name);
+    } catch { return []; }
+  }, [status, lastUserMessage, skills]);
+
+  // ── Chunk handler (shared between skill and regular paths) ─────────────────
+  const handleChunk = useCallback((
+    chunk: Awaited<ReturnType<AgentEngine['chat']>> extends AsyncGenerator<infer T> ? T : never,
+    accumulator: { text: string; provider: string },
+  ) => {
+    switch (chunk.type) {
+      case 'provider':
+        if (chunk.provider) {
+          accumulator.provider = chunk.provider;
+          setProvider(chunk.provider);
+          if (chunk.model) setResolvedModel(chunk.model);
+        }
+        break;
+
+      case 'text':
+        if (chunk.content) {
+          setStatus('streaming');
+          accumulator.text += chunk.content;
+          setStreaming(accumulator.text);
+        }
+        break;
+
+      case 'thinking':
+        if (chunk.content) setThinkingText((t) => t + chunk.content!);
+        break;
+
+      case 'agent_update':
+        if (chunk.agentUpdate) updateWorker(chunk.agentUpdate);
+        break;
+
+      case 'tool_call':
+        if (chunk.toolCall) {
+          setStatus('thinking');
+          const { name, id, input: ti } = chunk.toolCall;
+          setActiveTools((p) => [...p, { id, name, preview: argPreview(ti), startMs: Date.now() }]);
+        }
+        break;
+
+      case 'tool_result':
+        if (chunk.toolResult) {
+          const { toolCallId, content, isError } = chunk.toolResult;
+          setActiveTools((prev) => {
+            const tool = prev.find((t) => t.id === toolCallId);
+            if (tool) {
+              addMessage({
+                type: 'tool_call',
+                name: tool.name,
+                preview: tool.preview,
+                result: resultPreview(content),
+                elapsed: Date.now() - tool.startMs,
+                isError,
+              });
+            }
+            return prev.filter((t) => t.id !== toolCallId);
+          });
+        }
+        break;
+
+      case 'usage':
+        if (chunk.usage) {
+          setTokenStats({
+            input: chunk.usage.inputTokens,
+            output: chunk.usage.outputTokens,
+            elapsed: Date.now() - startMsRef.current,
+          });
+        }
+        break;
+
+      case 'status':
+        if (chunk.content) addMessage({ type: 'status', text: chunk.content });
+        break;
+
+      case 'memory_saved':
+        if (chunk.content) addMessage({ type: 'memory_saved', topic: chunk.content });
+        break;
+
+      case 'done':
+        break;
+    }
+  }, [addMessage, updateWorker]);
+
+  // ── Submit handler ─────────────────────────────────────────────────────────
+  const handleSubmit = useCallback(async (input: string): Promise<void> => {
     const trimmed = input.trim();
     if (!trimmed) return;
 
-    setHistory((h) => {
-      if (h[h.length - 1] === trimmed) return h;
-      return [...h, trimmed];
-    });
+    setHistory((h) => h[h.length - 1] === trimmed ? h : [...h, trimmed]);
 
-    if (/^(exit|quit|q)$/i.test(trimmed)) {
-      process.exit(0);
-    }
+    if (/^(exit|quit|q)$/i.test(trimmed)) process.exit(0);
 
+    // ── Command / Skill ────────────────────────────────────────────────────
     if (isCommand(trimmed)) {
-      // Check built-in commands first
       const [cmdName, ...cmdRest] = trimmed.slice(1).split(' ');
       const skillContent = skills.getSkillContent(cmdName ?? '');
 
       if (skillContent !== null) {
-        // Skill invocation — inject full skill content as system-level context for this turn
         const args = cmdRest.join(' ').trim();
         const injected = skillContent.replace(/\{\{args\}\}/g, args || '(none)');
         const skillMessage = `${injected}\n\n${args ? `User args: ${args}` : ''}`.trim();
@@ -192,59 +296,41 @@ export function App({
         setActiveTools([]);
         startMsRef.current = Date.now();
 
-        const forceModel = currentModelRef.current.value !== 'auto'
-          ? (currentModelRef.current.value as LLMProvider)
-          : undefined;
-
         const abort = new AbortController();
         abortRef.current = abort;
-        const { signal } = abort;
-        let accumulatedText = '';
-        let currentProvider = 'claude';
+        const acc = { text: '', provider: 'claude' };
 
         try {
           for await (const chunk of engine.chat({
             conversationId: conversationIdRef.current,
             message: skillMessage,
-            forceModel,
+            forceModel: currentModelRef.current.value !== 'auto'
+              ? (currentModelRef.current.value as LLMProvider)
+              : undefined,
           })) {
-            if (signal.aborted) break;
-            switch (chunk.type) {
-              case 'provider': if (chunk.provider) { currentProvider = chunk.provider; setProvider(chunk.provider); if (chunk.model) setResolvedModel(chunk.model); } break;
-              case 'text': if (chunk.content) { setStatus('streaming'); accumulatedText += chunk.content; setStreaming(accumulatedText); } break;
-              case 'thinking': if (chunk.content) { setThinkingText((t) => t + chunk.content!); } break;
-              case 'tool_call': if (chunk.toolCall) { setStatus('thinking'); const { name, id, input: ti } = chunk.toolCall; setActiveTools((p) => [...p, { id, name, preview: argPreview(ti), startMs: Date.now() }]); } break;
-              case 'tool_result': if (chunk.toolResult) { const { toolCallId, content, isError } = chunk.toolResult; setActiveTools((p) => { const t = p.find((x) => x.id === toolCallId); if (t) addMessage({ type: 'tool_call', name: t.name, preview: t.preview, result: resultPreview(content), elapsed: Date.now() - t.startMs, isError }); return p.filter((x) => x.id !== toolCallId); }); } break;
-              case 'usage': if (chunk.usage) setTokenStats({ input: chunk.usage.inputTokens, output: chunk.usage.outputTokens, elapsed: Date.now() - startMsRef.current }); break;
-              case 'memory_saved': if (chunk.content) addMessage({ type: 'memory_saved', topic: chunk.content }); break;
-              case 'done': break;
-            }
+            if (abort.signal.aborted) break;
+            handleChunk(chunk as Parameters<typeof handleChunk>[0], acc);
           }
         } catch (err: unknown) {
-          if (!signal.aborted) addMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+          if (!abort.signal.aborted) {
+            addMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+          }
         }
 
-        if (accumulatedText && !signal.aborted) addMessage({ type: 'assistant', text: accumulatedText, provider: currentProvider });
-        setStreaming('');
-        setThinkingText((t) => {
-          if (t && !signal.aborted) addMessage({ type: 'thinking', text: t });
-          return '';
-        });
-        setActiveTools([]); setStatus('idle');
-        setTokenStats((p) => ({ ...p, elapsed: Date.now() - startMsRef.current }));
-        abortRef.current = null;
+        if (acc.text && !abort.signal.aborted) {
+          addMessage({ type: 'assistant', text: acc.text, provider: acc.provider, elapsedMs: Date.now() - startMsRef.current });
+          setLastAssistantMessage(acc.text);
+        }
+        finaliseResponse(abort);
         return;
       }
 
+      // Built-in command
       const ctx: CommandContext = {
-        engine,
-        skills,
+        engine, skills,
         conversationId: conversationIdRef.current,
         currentModel: currentModelRef.current,
-        hamStore,
-        hamCompressor,
-        agents,
-        feedbackStore,
+        hamStore, hamCompressor, agents, feedbackStore,
         lastAssistantMessage,
       };
       addMessage({ type: 'user', text: trimmed });
@@ -252,18 +338,19 @@ export function App({
         const output = await handleCommand(trimmed, ctx);
         if (output) addMessage({ type: 'command_output', text: output });
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        addMessage({ type: 'error', message: msg });
+        addMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       }
       return;
     }
 
+    // ── Regular message ────────────────────────────────────────────────────
     addMessage({ type: 'user', text: trimmed });
     setLastUserMessage(trimmed);
     setStatus('thinking');
     setStreaming('');
     setActiveTools([]);
     startMsRef.current = Date.now();
+    responseMsRef.current = 0;
 
     const forceModel = currentModelRef.current.value !== 'auto'
       ? (currentModelRef.current.value as LLMProvider)
@@ -271,10 +358,7 @@ export function App({
 
     const abort = new AbortController();
     abortRef.current = abort;
-    const { signal } = abort;
-
-    let accumulatedText = '';
-    let currentProvider = 'claude';
+    const acc = { text: '', provider: 'claude' };
 
     try {
       for await (const chunk of engine.chat({
@@ -282,158 +366,111 @@ export function App({
         message: trimmed,
         forceModel,
       })) {
-        if (signal.aborted) break;
-
-        switch (chunk.type) {
-          case 'provider':
-            if (chunk.provider) {
-              currentProvider = chunk.provider;
-              setProvider(chunk.provider);
-              if (chunk.model) setResolvedModel(chunk.model);
-            }
-            break;
-
-          case 'text':
-            if (chunk.content) {
-              setStatus('streaming');
-              accumulatedText += chunk.content;
-              setStreaming(accumulatedText);
-            }
-            break;
-
-          case 'thinking':
-            if (chunk.content) {
-              setThinkingText((t) => t + chunk.content!);
-            }
-            break;
-
-          case 'tool_call':
-            if (chunk.toolCall) {
-              setStatus('thinking');
-              const { name, id, input: toolInput } = chunk.toolCall;
-              const preview = argPreview(toolInput);
-              setActiveTools((prev) => [...prev, { id, name, preview, startMs: Date.now() }]);
-            }
-            break;
-
-          case 'tool_result':
-            if (chunk.toolResult) {
-              const { toolCallId, content, isError } = chunk.toolResult;
-              setActiveTools((prev) => {
-                const tool = prev.find((t) => t.id === toolCallId);
-                if (tool) {
-                  const elapsed = Date.now() - tool.startMs;
-                  addMessage({
-                    type: 'tool_call',
-                    name: tool.name,
-                    preview: tool.preview,
-                    result: resultPreview(content),
-                    elapsed,
-                    isError,
-                  });
-                }
-                return prev.filter((t) => t.id !== toolCallId);
-              });
-            }
-            break;
-
-          case 'usage':
-            if (chunk.usage) {
-              setTokenStats({
-                input: chunk.usage.inputTokens,
-                output: chunk.usage.outputTokens,
-                elapsed: Date.now() - startMsRef.current,
-              });
-            }
-            break;
-
-          case 'memory_saved':
-            if (chunk.content) {
-              addMessage({ type: 'memory_saved', topic: chunk.content });
-            }
-            break;
-
-          case 'done':
-            break;
-        }
+        if (abort.signal.aborted) break;
+        if (chunk.type === 'text' && !responseMsRef.current) responseMsRef.current = Date.now();
+        handleChunk(chunk as Parameters<typeof handleChunk>[0], acc);
       }
     } catch (err: unknown) {
-      if (!signal.aborted) {
-        const msg = err instanceof Error ? err.message : String(err);
-        addMessage({ type: 'error', message: msg });
+      if (!abort.signal.aborted) {
+        addMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       }
     }
 
-    if (accumulatedText && !signal.aborted) {
-      addMessage({ type: 'assistant', text: accumulatedText, provider: currentProvider });
-      setLastAssistantMessage(accumulatedText);
+    if (acc.text && !abort.signal.aborted) {
+      addMessage({
+        type: 'assistant',
+        text: acc.text,
+        provider: acc.provider,
+        model: resolvedModel || undefined,
+        elapsedMs: responseMsRef.current ? Date.now() - responseMsRef.current : undefined,
+      });
+      setLastAssistantMessage(acc.text);
     }
 
+    finaliseResponse(abort);
+  }, [engine, skills, hamStore, hamCompressor, agents, feedbackStore, lastAssistantMessage, addMessage, clearWorkers, handleChunk, resolvedModel]);
+
+  const finaliseResponse = (abort: AbortController): void => {
     setStreaming('');
-    setThinkingText((t) => {
-      if (t && !signal.aborted) addMessage({ type: 'thinking', text: t });
-      return '';
-    });
+    setThinkingText('');
     setActiveTools([]);
     setStatus('idle');
-    setTokenStats((prev) => ({ ...prev, elapsed: Date.now() - startMsRef.current }));
+    setTokenStats((p) => ({ ...p, elapsed: Date.now() - startMsRef.current }));
     abortRef.current = null;
-  }, [engine, skills, hamStore, hamCompressor, agents, feedbackStore, lastAssistantMessage, addMessage]);
+    clearWorkers();
+    if (!abort.signal.aborted) {
+      // Inline reset so it doesn't depend on stale state
+    }
+  };
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <Box flexDirection="column">
-      {/* Message history — append-only via Static */}
+      {/* ── Message history — append-only via Static ── */}
       <Static items={messages}>
-        {(item) => (
-          <MessageItem key={item.key} message={item.msg} />
-        )}
+        {(item) => <MessageItem key={item.key} message={item.msg} />}
       </Static>
 
-      {/* Live thinking block */}
+      {/* ── Live thinking block ── */}
       {thinkingText && status !== 'idle' && (
-        <Box flexDirection="column" marginLeft={2} marginTop={1} marginBottom={1} borderStyle="single" borderColor="dim" borderTop={false} borderBottom={false} borderRight={false} paddingLeft={1}>
-          <Text dimColor color="yellow" bold>{'◐ Thought Process'}</Text>
-          {thinkingText.split('\n').slice(-10).map((line, i) => (
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          marginLeft={1}
+          borderStyle="single"
+          borderColor="dim"
+          borderTop={false}
+          borderBottom={false}
+          borderRight={false}
+          paddingLeft={1}
+        >
+          <Text dimColor bold>◈ thinking</Text>
+          {thinkingText.split('\n').slice(-8).map((line, i) => (
             <Text key={i} dimColor>{line}</Text>
           ))}
         </Box>
       )}
 
-      {/* Live streaming text */}
+      {/* ── Live streaming text ── */}
       {streaming && (
-        <Box 
-          flexDirection="column" 
-          marginTop={1} 
-          marginBottom={1}
-          borderStyle="round" 
-          borderColor={provider === 'gemini' ? 'green' : 'blue'}
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          marginLeft={1}
+          borderStyle="round"
+          borderColor={provider === 'gemini' ? 'green' : provider === 'ollama' ? 'magenta' : provider === 'openrouter' ? 'yellow' : 'blueBright'}
           paddingX={1}
         >
           <Box marginBottom={1}>
-            <Text dimColor color={provider === 'gemini' ? 'green' : 'blue'}>
-              {'✦ '}{provider.charAt(0).toUpperCase() + provider.slice(1)}
-            </Text>
+            <Text dimColor>✦ </Text>
+            <Text bold dimColor>{resolvedModel || provider}</Text>
+            <Text dimColor> · responding…</Text>
           </Box>
           <Box flexDirection="column">
-            {renderMarkdown(streaming).split('\n').map((line, i) => (
+            {streaming.split('\n').slice(-30).map((line, i) => (
               <Text key={i}>{line}</Text>
             ))}
           </Box>
         </Box>
       )}
 
-      {/* Active tool calls */}
-      {activeTools.map((tool) => (
-        <Box key={tool.id} flexDirection="column" marginTop={1} marginLeft={2}>
-          <Box>
-            <Text color="yellow">{'⚙ '}</Text>
-            <Text color="yellow" bold>{tool.name}</Text>
-            {tool.preview ? <Text dimColor>{'  '}{tool.preview}</Text> : null}
-          </Box>
-        </Box>
-      ))}
+      {/* ── WorkerRoom — live crew panel ── */}
+      <WorkerRoom workers={agentWorkers} sessionCostUsd={sessionCostUsd > 0 ? sessionCostUsd : undefined} />
 
-      {/* Permission prompt — blocks input until user decides */}
+      {/* ── In-flight tool calls (shown until tool_result arrives) ── */}
+      {activeTools.length > 0 && agentWorkers.size === 0 && (
+        <Box flexDirection="column" marginTop={0} marginLeft={3}>
+          {activeTools.map((tool) => (
+            <Box key={tool.id}>
+              <Text dimColor>⚡ </Text>
+              <Text dimColor bold>{tool.name}</Text>
+              {tool.preview ? <Text dimColor>  {tool.preview}</Text> : null}
+            </Box>
+          ))}
+        </Box>
+      )}
+
+      {/* ── Permission prompt ── */}
       {pendingPermission && (
         <PermissionPrompt
           toolName={pendingPermission.toolName}
@@ -443,7 +480,7 @@ export function App({
         />
       )}
 
-      {/* Status bar */}
+      {/* ── Status bar ── */}
       <StatusBar
         status={status}
         provider={provider}
@@ -455,14 +492,16 @@ export function App({
         cwd={process.cwd()}
         skillSuggestions={statusBarSuggestions}
         isPlanning={engine.planningManager.getMode() === 'plan'}
+        lastTurnCost={lastTurnCostUsd > 0 ? lastTurnCostUsd : undefined}
+        sessionCost={sessionCostUsd > 0 ? sessionCostUsd : undefined}
       />
 
-      {/* Input prompt */}
+      {/* ── Input ── */}
       <PromptInput
-        onSubmit={(val, refs) => { void handleSubmit(val, refs); }}
-        isDisabled={status !== 'idle' || pendingPermission !== null}
-        commands={skillNames}
+        onSubmit={(v) => handleSubmit(v)}
         history={history}
+        isDisabled={status !== 'idle' || pendingPermission !== null}
+        commands={skills.getSkillNames().map((n) => '/' + n)}
       />
     </Box>
   );

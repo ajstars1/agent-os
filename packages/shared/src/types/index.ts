@@ -31,6 +31,8 @@ export interface ToolCall {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** Provider-specific opaque signature required when replaying Gemini tool calls. */
+  thoughtSignature?: string;
 }
 
 export interface ToolResult {
@@ -49,8 +51,52 @@ export interface SessionCost {
   sessionUsdTotal: number;
 }
 
+export type AgentWorkerLifecycle = 'queued' | 'running' | 'done' | 'failed';
+export type AgentRunPhase = 'routing' | 'decomposed' | 'running' | 'reducing' | 'done';
+
+export interface AgentWorkerStatus {
+  id: string;
+  index: number;
+  type: string;
+  label: string;
+  status: AgentWorkerLifecycle;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  summary?: string;
+}
+
+export interface AgentRunStatus {
+  runId: string;
+  phase: AgentRunPhase;
+  message: string;
+  totalCount: number;
+  activeCount: number;
+  completedCount: number;
+  failedCount: number;
+  workers: AgentWorkerStatus[];
+}
+
+export type AgentStatus = 'thinking' | 'running' | 'done' | 'waiting' | 'error' | 'planning';
+
+export interface AgentUpdate {
+  agentId: string;
+  label: string;
+  status: AgentStatus;
+  /** Current task description */
+  task?: string;
+  /** Tool currently running */
+  tool?: string;
+  toolPreview?: string;
+  iteration: number;
+  maxIterations: number;
+  elapsedMs: number;
+  /** Optional note (e.g. stall warning, grace call, error summary) */
+  note?: string;
+}
+
 export interface StreamChunk {
-  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done' | 'thinking' | 'status' | 'permission_request' | 'error' | 'hook_blocked';
+  type: 'text' | 'tool_call' | 'tool_result' | 'usage' | 'provider' | 'memory_saved' | 'done' | 'thinking' | 'status' | 'agent_status' | 'permission_request' | 'error' | 'hook_blocked' | 'agent_update';
   content?: string;
   provider?: LLMProvider;
   /** Resolved model label (e.g. 'gemini:flash-thinking', 'or:gpt-4o'). */
@@ -62,11 +108,13 @@ export interface StreamChunk {
     outputTokens: number;
   };
   cost?: SessionCost;
+  agentStatus?: AgentRunStatus;
   permissionRequest?: {
     toolName: string;
     input: Record<string, unknown>;
     preview: string;
   };
+  agentUpdate?: AgentUpdate;
 }
 
 export type PermissionDecision = 'allow' | 'always' | 'deny';

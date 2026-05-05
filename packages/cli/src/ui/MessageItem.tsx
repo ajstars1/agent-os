@@ -1,136 +1,210 @@
+/**
+ * MessageItem v2 — clean, modern message rendering for the AgentOS v2 UI.
+ */
+
 import React from 'react';
 import { Box, Text } from 'ink';
-import { renderMarkdown } from './markdown.js';
+import { MarkdownView } from './MarkdownView.js';
 
 export type MessageEntry =
   | { type: 'user'; text: string }
-  | { type: 'assistant'; text: string; provider: string }
+  | { type: 'assistant'; text: string; provider: string; model?: string; elapsedMs?: number }
   | { type: 'tool_call'; name: string; preview: string; result?: string; elapsed?: number; isError?: boolean }
   | { type: 'memory_saved'; topic: string }
   | { type: 'error'; message: string }
   | { type: 'command_output'; text: string }
-  | { type: 'thinking'; text: string };
+  | { type: 'thinking'; text: string }
+  | { type: 'status'; text: string };
 
-// Human-readable verb for a tool name
-const TOOL_VERB: Record<string, string> = {
-  bash:        'Bash',
-  glob:        'Glob',
-  grep:        'Search',
-  edit:        'Edit',
-  read_file:   'Read',
-  write_file:  'Write',
-  ls:          'List',
-  web_fetch:   'Fetch',
-  remember:    'Remember',
+// ─── Provider colours ─────────────────────────────────────────────────────────
+
+function providerColor(provider: string): string {
+  if (provider === 'gemini')      return 'green';
+  if (provider === 'openrouter')  return 'yellow';
+  if (provider === 'ollama')      return 'magenta';
+  return 'blueBright';
+}
+
+function providerLabel(provider: string, model?: string): string {
+  if (model) return model;
+  const labels: Record<string, string> = {
+    claude:      'claude',
+    gemini:      'gemini',
+    openrouter:  'openrouter',
+    ollama:      'ollama',
+  };
+  return labels[provider] ?? provider;
+}
+
+// ─── Tool verb map ────────────────────────────────────────────────────────────
+
+const TOOL_ICON: Record<string, string> = {
+  bash:              '⚡',
+  read_file:         '📖',
+  write_file:        '✏',
+  edit:              '✏',
+  glob:              '🔍',
+  grep:              '🔍',
+  web_fetch:         '🌐',
+  web_search:        '🌐',
+  browser_navigate:  '🌐',
+  browser_snapshot:  '📸',
+  remember:          '🧠',
+  delegate_task:     '👥',
+  generate_image:    '🖼',
+  analyze_image:     '👁',
 };
 
-function toolVerb(name: string): string {
-  return TOOL_VERB[name] ?? name;
+function toolIcon(name: string): string {
+  return TOOL_ICON[name] ?? '⚙';
 }
 
-interface Props {
-  message: MessageEntry;
+function fmtElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
+
+// ─── Components ───────────────────────────────────────────────────────────────
+
+interface Props { message: MessageEntry }
 
 export function MessageItem({ message }: Props): React.ReactElement {
   switch (message.type) {
+
+    // ── User ──────────────────────────────────────────────────────────────────
     case 'user':
       return (
-        <Box marginTop={1} marginLeft={1}>
-          <Text bold color="cyan">{'❯ '}</Text>
-          <Text bold color="white">{message.text}</Text>
-        </Box>
-      );
-
-    case 'assistant': {
-      const rendered = renderMarkdown(message.text);
-      const providerColor = message.provider === 'gemini' ? 'green' : 'blue';
-      const providerName = message.provider.charAt(0).toUpperCase() + message.provider.slice(1);
-      
-      return (
-        <Box 
-          flexDirection="column" 
-          marginTop={1} 
-          marginBottom={1}
-          borderStyle="round" 
-          borderColor={providerColor}
-          paddingX={1}
-        >
-          <Box marginBottom={1}>
-            <Text dimColor color={providerColor}>{'✦ '}{providerName}</Text>
-          </Box>
+        <Box marginTop={1} marginLeft={1} flexDirection="row">
+          <Text bold color="cyan">❯  </Text>
           <Box flexDirection="column">
-            {rendered.split('\n').map((line, i) => (
-              <Text key={i}>{line}</Text>
+            {message.text.split('\n').map((line, i) => (
+              <Text key={i} bold color="white">{line}</Text>
             ))}
           </Box>
         </Box>
       );
-    }
 
-    case 'tool_call': {
-      const verb = toolVerb(message.name);
-      const elapsedStr = message.elapsed !== undefined
-        ? message.elapsed >= 1000
-          ? `${(message.elapsed / 1000).toFixed(1)}s`
-          : `${message.elapsed}ms`
-        : '';
-      
-      const borderColor = message.isError ? 'red' : 'dim';
-      const resultColor = message.isError ? 'red' : undefined;
+    // ── Assistant ─────────────────────────────────────────────────────────────
+    case 'assistant': {
+      const color = providerColor(message.provider);
+      const label = providerLabel(message.provider, message.model);
+      const elapsed = message.elapsedMs ? fmtElapsed(message.elapsedMs) : '';
 
       return (
-        <Box flexDirection="column" marginTop={1} marginLeft={2}>
-          <Box>
-            <Text color={message.isError ? 'red' : 'yellow'}>
-              {message.isError ? '✗ ' : '⚙ '}
-            </Text>
-            <Text color="yellow" bold>{verb}</Text>
-            {message.preview ? <Text dimColor>{'  '}{message.preview}</Text> : null}
-            {elapsedStr ? <Text dimColor>{'  · '}{elapsedStr}</Text> : null}
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          marginLeft={1}
+          borderStyle="round"
+          borderColor={color}
+          paddingX={1}
+          paddingY={0}
+        >
+          {/* Provider header */}
+          <Box marginBottom={1}>
+            <Text bold color={color}>✦ {label}</Text>
+            {elapsed && <Text dimColor>{'  ·  '}{elapsed}</Text>}
           </Box>
-          {message.result && (
-            <Box marginTop={0} marginLeft={2} borderStyle="round" borderColor={borderColor} paddingX={1}>
-               <Text dimColor={!message.isError} color={resultColor}>{message.result.trim()}</Text>
+          {/* Markdown content */}
+          <MarkdownView markdown={message.text} />
+        </Box>
+      );
+    }
+
+    // ── Tool call ─────────────────────────────────────────────────────────────
+    case 'tool_call': {
+      const icon = toolIcon(message.name);
+      const elapsed = message.elapsed !== undefined ? fmtElapsed(message.elapsed) : '';
+      const statusIcon = message.isError ? '✗' : '✓';
+      const statusColor = message.isError ? 'red' : 'green';
+
+      return (
+        <Box flexDirection="column" marginTop={0} marginLeft={3}>
+          {/* Tool header line */}
+          <Box>
+            <Text dimColor>{icon} </Text>
+            <Text dimColor bold>{message.name}</Text>
+            {message.preview ? <Text dimColor>{'  '}{message.preview}</Text> : null}
+            <Text dimColor>{elapsed ? `  ${elapsed}` : ''}</Text>
+            <Text color={statusColor} dimColor>{'  '}{statusIcon}</Text>
+          </Box>
+          {/* Error output only */}
+          {message.result && message.isError && (
+            <Box marginLeft={3} borderStyle="single" borderColor="red" paddingX={1}>
+              <Text color="red">{message.result}</Text>
             </Box>
           )}
         </Box>
       );
     }
 
+    // ── Memory saved ──────────────────────────────────────────────────────────
     case 'memory_saved':
       return (
-        <Box marginLeft={2} marginTop={1}>
-          <Text color="magenta">{'✦ '}</Text>
-          <Text dimColor>Saved to memory: </Text>
-          <Text color="magenta">&quot;{message.topic}&quot;</Text>
+        <Box marginLeft={3} marginTop={0}>
+          <Text dimColor color="magenta">✦ memory  </Text>
+          <Text dimColor>&quot;{message.topic}&quot;</Text>
         </Box>
       );
 
+    // ── Error ─────────────────────────────────────────────────────────────────
     case 'error':
       return (
-        <Box marginLeft={2} marginTop={1} borderStyle="round" borderColor="red" paddingX={1}>
-          <Text color="red" bold>{'✗ Error: '}</Text>
+        <Box
+          marginTop={1}
+          marginLeft={1}
+          borderStyle="round"
+          borderColor="red"
+          paddingX={1}
+        >
+          <Text color="red" bold>✗  </Text>
           <Text color="red">{message.message}</Text>
         </Box>
       );
 
+    // ── Command output ────────────────────────────────────────────────────────
     case 'command_output':
       return (
-        <Box flexDirection="column" marginLeft={2} marginTop={1} marginBottom={1} borderStyle="round" borderColor="dim" paddingX={1}>
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          marginLeft={1}
+          borderStyle="single"
+          borderColor="dim"
+          paddingX={1}
+        >
           {message.text.split('\n').map((line, i) => (
             <Text key={i} dimColor>{line}</Text>
           ))}
         </Box>
       );
 
+    // ── Thinking ──────────────────────────────────────────────────────────────
     case 'thinking':
       return (
-        <Box flexDirection="column" marginLeft={2} marginTop={1} marginBottom={1} borderStyle="single" borderColor="dim" borderTop={false} borderBottom={false} borderRight={false} paddingLeft={1}>
-          <Text dimColor color="yellow" bold>{'◐ Thought Process'}</Text>
-          {message.text.split('\n').map((line, i) => (
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          marginLeft={1}
+          borderStyle="single"
+          borderColor="dim"
+          borderTop={false}
+          borderBottom={false}
+          borderRight={false}
+          paddingLeft={1}
+        >
+          <Text dimColor bold>◈ thinking</Text>
+          {message.text.split('\n').slice(0, 12).map((line, i) => (
             <Text key={i} dimColor>{line}</Text>
           ))}
+        </Box>
+      );
+
+    // ── Status ────────────────────────────────────────────────────────────────
+    case 'status':
+      return (
+        <Box marginLeft={3} marginTop={0}>
+          <Text dimColor>◌ {message.text}</Text>
         </Box>
       );
   }
