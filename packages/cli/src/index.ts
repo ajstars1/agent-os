@@ -32,16 +32,18 @@ function resolveEnv(): void {
 resolveEnv();
 
 import { loadConfig } from '@agent-os-core/shared';
-import { bootstrap } from '@agent-os-core/core';
+import { bootstrap, hasClaudeAuthSync } from '@agent-os-core/core';
 import { App } from './ui/App.js';
 
 // ─── Args ─────────────────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]): { agent?: string; model?: string; update?: boolean; voice?: boolean } {
-  const result: { agent?: string; model?: string; update?: boolean; voice?: boolean } = {};
+function parseArgs(argv: string[]): { agent?: string; model?: string; update?: boolean; voice?: boolean; ui?: boolean } {
+  const result: { agent?: string; model?: string; update?: boolean; voice?: boolean; ui?: boolean } = {};
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === 'update' || argv[i] === '--update') {
       result.update = true;
+    } else if (argv[i] === 'ui' || argv[i] === '--ui') {
+      result.ui = true;
     } else if (argv[i] === '--voice' || argv[i] === '-v') {
       result.voice = true;
     } else if ((argv[i] === '--agent' || argv[i] === '-a') && argv[i + 1]) {
@@ -51,6 +53,81 @@ function parseArgs(argv: string[]): { agent?: string; model?: string; update?: b
     }
   }
   return result;
+}
+
+// ─── UI launcher ──────────────────────────────────────────────────────────────
+
+async function runUiMode(): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  const { existsSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const E = '\x1b';
+  const pink   = (s: string) => `${E}[38;2;255;107;157m${s}${E}[0m`;
+  const lilac  = (s: string) => `${E}[38;2;167;139;250m${s}${E}[0m`;
+  const dim    = (s: string) => `${E}[2m${s}${E}[0m`;
+  const bold   = (s: string) => `${E}[1m${s}${E}[0m`;
+
+  process.stdout.write('\n');
+  process.stdout.write(`  ${bold(pink('agent') + lilac('os'))} ${dim('· playful glass UI')}\n\n`);
+
+  // Find monorepo root by walking up from this file
+  const here = fileURLToPath(import.meta.url);
+  let root = here;
+  for (let i = 0; i < 8; i++) {
+    root = join(root, '..');
+    if (existsSync(join(root, 'turbo.json'))) break;
+  }
+
+  const uiDir  = join(root, 'packages', 'ui');
+  const webDir = join(root, 'packages', 'web');
+
+  if (!existsSync(uiDir) || !existsSync(webDir)) {
+    process.stderr.write(`  ${pink('✗')} could not find packages/ui or packages/web. Run from a monorepo checkout.\n\n`);
+    process.exit(1);
+  }
+
+  const webPort = 3001;
+  const uiPort  = 3002;
+
+  process.stdout.write(`  ${dim('starting')} ${pink('api')}    ${dim('localhost:' + webPort)}\n`);
+
+  const web = spawn('node', ['dist/index.js'], {
+    cwd: webDir,
+    env: { ...process.env, WEB_PORT: String(webPort), WEB_CORS_ORIGIN: `http://localhost:${uiPort}` },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  web.stderr.on('data', (b: Buffer) => process.stderr.write(dim(b.toString())));
+
+  await new Promise((r) => setTimeout(r, 1500));
+
+  process.stdout.write(`  ${dim('starting')} ${lilac('ui')}     ${dim('localhost:' + uiPort)}\n\n`);
+
+  const next = spawn('npx', ['next', 'start', '-p', String(uiPort)], {
+    cwd: uiDir,
+    env: { ...process.env, NEXT_PUBLIC_API_URL: `http://localhost:${webPort}` },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  next.stderr.on('data', (b: Buffer) => process.stderr.write(dim(b.toString())));
+
+  // Open browser
+  await new Promise((r) => setTimeout(r, 2500));
+  const url = `http://localhost:${uiPort}`;
+  process.stdout.write(`  ${pink('✦')} ${bold('open')} ${url}\n\n`);
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
+
+  const shutdown = (): void => {
+    web.kill();
+    next.kill();
+    process.exit(0);
+  };
+  process.on('SIGINT',  shutdown);
+  process.on('SIGTERM', shutdown);
+
+  // Wait forever
+  await new Promise(() => {});
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -266,6 +343,11 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  if (args.ui) {
+    await runUiMode();
+    return;
+  }
+
   process.env['LOG_LEVEL'] = 'warn';
 
   let config;
@@ -277,7 +359,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const noKeys = !config.ANTHROPIC_API_KEY && !config.GOOGLE_API_KEY;
+  const noKeys = !hasClaudeAuthSync(config.ANTHROPIC_API_KEY) && !config.GOOGLE_API_KEY;
 
   if (args.model && ['claude', 'gemini', 'auto'].includes(args.model)) {
     config = { ...config, DEFAULT_MODEL: args.model as typeof config.DEFAULT_MODEL };

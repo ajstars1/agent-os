@@ -2,85 +2,235 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
+/* ─── Design Tokens ──────────────────────────────────────────────────────────── */
 :root {
-  --background: #0a0a0a;
-  --surface: #111111;
-  --border: #1f1f1f;
-  --accent: #7c3aed;
-  --text-primary: #f0f0f0;
-  --text-muted: #6b7280;
+  --ink:        #0B0518;
+  --ink-soft:   #1A0F2E;
+  --cream:      #FAF6FF;
+  --pink:       #FF6B9D;
+  --lilac:      #A78BFA;
+  --sky:        #60A5FA;
+  --mint:       #4ECDC4;
+  --sun:        #FBBF24;
+
+  --glass-bg:   rgba(255, 255, 255, 0.06);
+  --glass-bg-2: rgba(255, 255, 255, 0.04);
+  --glass-bd:   rgba(255, 255, 255, 0.10);
+  --glass-bd-2: rgba(255, 255, 255, 0.06);
+
+  --text-1:     rgba(250, 246, 255, 0.96);
+  --text-2:     rgba(250, 246, 255, 0.72);
+  --text-3:     rgba(250, 246, 255, 0.48);
+  --text-4:     rgba(250, 246, 255, 0.28);
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+/* ─── Reset / Base ──────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
-html,
-body {
+html, body {
   height: 100%;
-  background-color: var(--background);
-  color: var(--text-primary);
-  font-family: Inter, system-ui, sans-serif;
+  color: var(--text-1);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv02','cv03','cv04','cv11';
+  overflow: hidden;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+body {
+  background: var(--ink-soft);
+  position: relative;
 }
 
-::-webkit-scrollbar-track {
-  background: var(--surface);
+/* ─── Mesh Gradient Background ──────────────────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(ellipse 80% 60% at 15% 10%,  rgba(255, 107, 157, 0.30), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 85% 25%,  rgba(167, 139, 250, 0.30), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 50% 85%,  rgba(96, 165, 250, 0.20),  transparent 60%),
+    radial-gradient(ellipse 60% 45% at 90% 95%,  rgba(78, 205, 196, 0.18),  transparent 60%),
+    linear-gradient(135deg, #0B0518 0%, #1A0F2E 50%, #06030F 100%);
+  background-size: 200% 200%;
+  animation: bgDrift 24s ease-in-out infinite;
 }
 
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0);
+  background-size: 32px 32px;
+  pointer-events: none;
+}
+
+@keyframes bgDrift {
+  0%,   100% { background-position: 0% 0%, 100% 0%, 0% 100%, 100% 100%, 0 0; }
+  50%        { background-position: 20% 30%, 80% 60%, 20% 80%, 80% 70%, 0 0; }
+}
+
+@keyframes cursorBlink {
+  0%, 50%      { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #2d2d2d;
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  transition: background 200ms;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.16); }
+
+/* ─── Selection ─────────────────────────────────────────────────────────────── */
+::selection {
+  background: rgba(255, 107, 157, 0.35);
+  color: var(--cream);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #3d3d3d;
+/* ─── Glass utility classes ─────────────────────────────────────────────────── */
+@layer utilities {
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    border: 1px solid var(--glass-bd);
+  }
+  .glass-soft {
+    background: var(--glass-bg-2);
+    backdrop-filter: blur(18px) saturate(130%);
+    -webkit-backdrop-filter: blur(18px) saturate(130%);
+    border: 1px solid var(--glass-bd-2);
+  }
+  .glass-strong {
+    background: rgba(255, 255, 255, 0.10);
+    backdrop-filter: blur(32px) saturate(180%);
+    -webkit-backdrop-filter: blur(32px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+  }
+  .text-1 { color: var(--text-1); }
+  .text-2 { color: var(--text-2); }
+  .text-3 { color: var(--text-3); }
+  .text-4 { color: var(--text-4); }
+
+  .gradient-text-pink {
+    background: linear-gradient(135deg, #FF6B9D 0%, #FFB3CC 50%, #A78BFA 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .gradient-text-arc {
+    background: linear-gradient(135deg, #FF6B9D 0%, #A78BFA 50%, #60A5FA 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .gradient-border {
+    position: relative;
+    background-clip: padding-box;
+  }
+  .gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(135deg, rgba(255,107,157,0.6), rgba(167,139,250,0.4), rgba(96,165,250,0.4));
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .focus-ring:focus-visible {
+    outline: 2px solid rgba(255, 107, 157, 0.6);
+    outline-offset: 2px;
+  }
 }
 
-/* Code styling */
-code {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+/* ─── Markdown content ──────────────────────────────────────────────────────── */
+.prose-arc {
+  color: var(--text-1);
+  font-size: 15px;
+  line-height: 1.7;
+  letter-spacing: -0.005em;
+}
+.prose-arc p { margin-bottom: 0.85em; }
+.prose-arc p:last-child { margin-bottom: 0; }
+.prose-arc strong { color: #FFB3CC; font-weight: 600; }
+.prose-arc em { color: #C4B5FD; font-style: italic; }
+.prose-arc h1, .prose-arc h2, .prose-arc h3 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 1.2em 0 0.5em;
+  background: linear-gradient(135deg, #FFB3CC 0%, #C4B5FD 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.prose-arc h1 { font-size: 1.5em; }
+.prose-arc h2 { font-size: 1.25em; }
+.prose-arc h3 { font-size: 1.1em; }
+.prose-arc code {
+  font-family: 'JetBrains Mono', monospace;
   font-size: 0.875em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 107, 157, 0.12);
+  color: #FFB3CC;
+  border: 1px solid rgba(255, 107, 157, 0.18);
+}
+.prose-arc pre {
+  background: rgba(11, 5, 24, 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 14px 16px;
+  border-radius: 12px;
+  margin: 0.85em 0;
+  overflow-x: auto;
+}
+.prose-arc pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text-1);
+}
+.prose-arc ul, .prose-arc ol { margin: 0.5em 0 0.85em 1.2em; }
+.prose-arc li { margin: 0.2em 0; }
+.prose-arc a {
+  color: #FFB3CC;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(255, 179, 204, 0.4);
+  transition: text-decoration-color 200ms;
+}
+.prose-arc a:hover { text-decoration-color: #FFB3CC; }
+.prose-arc blockquote {
+  border-left: 3px solid rgba(167, 139, 250, 0.5);
+  padding-left: 14px;
+  color: var(--text-2);
+  margin: 0.85em 0;
 }
 
-/* Smooth transitions */
-* {
-  transition-property: background-color, border-color, color, opacity;
-  transition-duration: 150ms;
-  transition-timing-function: ease;
-}
-
-/* Animations */
-@keyframes pulse-dot {
-  0%, 80%, 100% {
-    transform: scale(0.6);
-    opacity: 0.4;
-  }
-  40% {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-
-.animate-pulse-dot {
-  animation: pulse-dot 1.4s infinite ease-in-out;
-}
-
-.animate-pulse-dot:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.animate-pulse-dot:nth-child(3) {
-  animation-delay: 0.4s;
+/* ─── Typing cursor ─────────────────────────────────────────────────────────── */
+.typing-cursor::after {
+  content: '▍';
+  display: inline-block;
+  margin-left: 1px;
+  color: #FF6B9D;
+  animation: cursorBlink 1s step-end infinite;
 }

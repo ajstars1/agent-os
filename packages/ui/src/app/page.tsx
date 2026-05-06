@@ -1,5 +1,5 @@
-import { redirect } from 'next/navigation';
+import { Shell } from '@/components/v3/Shell';
 
-export default function RootPage() {
-  redirect('/chat');
+export default function HomePage() {
+  return <Shell />;
 }
