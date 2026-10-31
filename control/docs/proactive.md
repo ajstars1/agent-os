@@ -2,7 +2,7 @@
 
 Status: design, 29 Oct 2026. Owner: Ayush. Implementation tasks live in the aos task list (venture `aos`).
 
-Code: the pure parts (scorer §7, feedback and promotion §10, proposer-output validation §6) live in a standalone, agent-agnostic package, `initiative` (separate repo, local only for now), so other agents can use them too. aos adds storage (Supabase), senses, the proposer prompt and Discord delivery on top. `action_classes` therefore also needs `n_at_level_change numeric not null default 0` and `last_incident_at timestamptz`.
+Code: the pure parts (scorer §7, feedback and promotion §10, proposer-output validation §6) live in a standalone, agent-agnostic package, `initiative` (separate repo, local only for now), so other agents can use them too. aos adds storage (Supabase), senses, the proposer prompt and Discord delivery on top. Since 31 Oct each class keeps two counters (§10), so a follow-up migration must reshape `action_classes` before storage is wired. It needs `pref_alpha`, `pref_beta` and `pref_updated_at`; `ledger_alpha` and `ledger_beta`; `accepted`, `judged` and `last_shown_at`, replacing `alpha`, `beta` and `n_at_level_change`. `feedback` also needs `seen boolean` and `severity text`. Nothing writes these tables yet.
 
 ## 1. Why
 
@@ -215,9 +215,17 @@ L1/L2 work becomes an ordinary aos task (`owner claude`, `auto true`, `source ca
 
 ## 10. Verify and learn
 
-- Feedback events: ✅ accept → α+1; ❌ reject → β+1; ignored 48 h → β+0.3 (weak); edited then accepted → α+1 and the edit is kept as an example for the proposer; `revert` → β+1, `incidents+1`, immediate demotion.
+- Feedback events feed two counters per class (changed 31 Oct, after the research on bandits for one user and on earned autonomy).
+  - **Preference** (for scoring) forgets toward the prior by 2% a calendar day, a 34-day half-life.
+  - **Trust ledger** (for promotion) keeps explicit verdicts at the current level only. It never decays and resets on every level change.
+  - ✅ accept: +1 to both. ❌ reject: −1 to both.
+  - Edited then accepted: a full yes for preference, half a yes and half a no for trust. The edit is kept as an example for the proposer.
+  - Ignored past ~24 h: 0.5 of a no for preference **only if the user saw it**, 0 if unseen (not delivered, or sent while focused, away or asleep). Never counted for trust.
+  - `revert`: −1 for preference and 3 failures for trust, plus `incidents+1`. A minor revert demotes one level; a major one, or a second within 30 days, demotes to L0.
+  - The repeat penalty ν counts seen ignores of the same suggestion, fading with a 15-day half-life.
+  - Each pass draws one θ per class, takes at most one per class into the top 3, and gives a class unseen for 21 days one exploration slot, only when the user is free.
 - Outcome: after a candidate is done, the next goal readings are attributed to it (simple: progress within 7 days on the same goal, split across done candidates). This is what turns "liked" into "useful".
-- Autonomy promotion (per class, never past `max_level`, and never past L2 whatever `max_level` says): promote one level when there are ≥ 20 judgments **since the last level change** (`n − n_at_level_change`, stored per class), the 5th percentile of Beta(α, β) ≥ 0.85, and zero incidents in 30 days. The "since the last change" part stops a class with a long history from jumping L0 → L2 on two consecutive ticks; answers at L1 are different evidence from answers at L0. Any incident: drop to L0 and reset the incident clock. Promotions are announced, and the user can veto them.
+- Autonomy promotion (per class, never past `max_level`, and never past L2 whatever `max_level` says): promote one level when the trust ledger holds ≥ 20 explicit judgments **at the current level**, its 5th percentile is ≥ 0.85 (in practice about 92%+ true acceptance), and there were no incidents in 30 days. Judging each step on its own level's record keeps L1 → L2, the step into acting alone, from being easier than L0 → L1. L0 → L1 is announced and can be vetoed; **L1 → L2 needs the user's explicit opt-in**, shown with one example and the undo path. Drift alarm: when a promoted class's recent preference falls more than 0.15 below its ledger rate, ask the user to re-confirm instead of demoting silently.
 - Weekly reflection (LLM, Sunday): reads the week's candidates, feedback, outcomes and costs; proposes changes (goal weights, constants, new classes, things to stop doing) as a `reflections` row. Nothing applies without the user's ✅.
 
 ## 11. Evals: how we know it is getting better
