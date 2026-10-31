@@ -1,0 +1,15 @@
+{
+  "name": "aos-cloud",
+  "private": true,
+  "type": "module",
+  "description": "Always-on basic aos bot on the MeshCentral VM",
+  "dependencies": {
+    "discord.js": "^14.22.0",
+    "https-proxy-agent": "^7.0.6",
+    "minimist": "^1.2.8",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6"
+  }
+}

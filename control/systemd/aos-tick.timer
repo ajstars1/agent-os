@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the aos runner every 10 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/10:00
+# after boot (auto-login), run once 2 min in so work queued while the PC was off starts right away
+OnStartupSec=2min
+Persistent=false
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

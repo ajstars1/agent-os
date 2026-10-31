@@ -1,0 +1,16 @@
+node_modules
+.next
+.env*
+!.env.example
+.vercel
+supabase/.temp
+runner/.lock
+runner/.home-ip
+runner/.home-ip-failed
+cloud/node_modules
+runner/.mesh-backup-day
+runner/.watch-state.json
+runner/.ai-vm.json
+watchdog/.approval-cards.json
+runner/.claude-limit.json
+runner/seed.ts

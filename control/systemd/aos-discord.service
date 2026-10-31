@@ -1,0 +1,17 @@
+[Unit]
+Description=aos phone agent: Claude Code session listening to Discord (tmux session aos-discord)
+After=graphical-session.target
+
+[Service]
+Type=forking
+WorkingDirectory=/home/ubuntu/Developer/Ayush
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.bun/bin:/home/ubuntu/.nvm/versions/node/v24.18.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-1
+ExecStart=/usr/bin/tmux new-session -d -s aos-discord /home/ubuntu/Developer/Ayush/agent-os/control/systemd/discord-agent.sh
+ExecStop=/usr/bin/tmux kill-session -t aos-discord
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

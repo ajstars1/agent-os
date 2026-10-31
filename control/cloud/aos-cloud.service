@@ -1,0 +1,19 @@
+[Unit]
+Description=aos-cloud: always-on basic Discord bot (PC power, tasks, quick answers)
+After=network-online.target tailscaled.service meshcentral.service
+Wants=network-online.target
+
+[Service]
+User=aoscloud
+WorkingDirectory=/opt/aos-cloud
+EnvironmentFile=/etc/aos-cloud/env
+ExecStart=/usr/bin/node /opt/aos-cloud/bot.ts
+Restart=always
+RestartSec=15
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

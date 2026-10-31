@@ -1,0 +1,29 @@
+{
+  "name": "aos-control",
+  "private": true,
+  "version": "0.1.0",
+  "description": "agent-os control plane: tasks, calendar, approvals and Claude runs",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "type-check": "tsc --noEmit",
+    "tick": "bun runner/tick.ts",
+    "agenda": "bun hooks/agenda.ts",
+    "seed": "bun runner/seed.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@supabase/supabase-js": "^2.118.0",
+    "mcp-handler": "^2.3.0",
+    "next": "^15.5.28",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "typescript": "^6.0.3"
+  }
+}
