@@ -8,7 +8,12 @@ Keep this open on the phone: the PC screen is busy with the BIOS.
 - Power Management → **Wake on LAN/WLAN** = **LAN Only**
 - Power Management → **Deep Sleep Control** = **Disabled** (keeps the network card powered when off)
 - Intel AMT (may sit under "Manageability" or "Intel AMT Capability") → **Enable Intel AMT Capability**, **MEBx Hotkey** = Enabled
+- POST Behavior → **Warnings and Errors** = **Continue on Warnings and Errors** (a boot warning no longer stops at "Press F1 to retry boot" waiting for a key nobody can press remotely)
+- General → Date/Time: set the current date and time.
 - Apply → Exit. Leave everything else as it is.
+
+### "Time-of-day not set – please run SETUP program" (F1 / F2 / F5 screen)
+The CMOS coin cell (CR2032, on the motherboard) is dead or weak, so the clock resets after every power loss and POST stops at this screen. Replace the battery (power off, unplug, wait 30 s, swap the cell, then set Date/Time in F2); the "Continue on Warnings and Errors" setting above is the safety net until then. Linux corrects the clock from the network once it is up. If the screen still appears on a remote power-on, press F1 through MeshCentral → the PC → Intel AMT → Remote Desktop (AMT KVM works before the OS).
 
 ## 2. AMT setup (MEBx): press Ctrl+P at the Dell logo
 (Missed it? F12 at the logo → "Intel Management Engine BIOS Extension".)
