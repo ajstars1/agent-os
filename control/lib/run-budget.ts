@@ -35,8 +35,9 @@ export const budgetLimits = (env: Record<string, string | undefined> = process.e
 
 export const checkBudget = (runs: RecentRun[], limits: BudgetLimits, now: Date): BudgetVerdict => {
   const since = now.getTime() - WINDOW_MS
+  // A run that cost $0 died at the limit or before starting: it used no budget, so it doesn't count.
   const inWindow = runs
-    .filter((r) => new Date(r.started_at).getTime() >= since)
+    .filter((r) => new Date(r.started_at).getTime() >= since && r.cost_usd !== 0)
     .sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime())
   const usd = inWindow.reduce((sum, r) => sum + (r.cost_usd ?? 0), 0)
   const ok = inWindow.length < limits.maxRuns && usd < limits.maxUsd

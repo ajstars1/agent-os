@@ -17,7 +17,10 @@ export interface LimitState {
   source: string
 }
 
-const LIMIT_RE = /usage limit|limit reached|hit your (?:usage )?limit|limit will reset|out of extra usage/i
+const LIMIT_RE = /usage limit|limit reached|hit your (?:[\w-]+ )?limit|limit will reset|out of extra usage/i
+
+/** A reset time this far in the past is the one that just passed (a late or repeated message), not tomorrow's. */
+const JUST_PASSED_MS = 5 * 60 * 60 * 1000
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 const RESET_RE = new RegExp(
   String.raw`resets?\s+(?:at\s+|on\s+)?(?:(${MONTHS.join('|')})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)`,
@@ -45,8 +48,10 @@ export const parseLimit = (text: string, now: Date = new Date()): { until: Date 
     return { until: thisYear.getTime() < now.getTime() - 86_400_000 ? at(local.getUTCFullYear() + 1, mo, Number(day)) : thisYear }
   }
   const today = at(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate())
-  // "resets 7am" seen at 10pm means tomorrow
-  return { until: today.getTime() <= now.getTime() - 60_000 ? new Date(today.getTime() + 86_400_000) : today }
+  // "resets 7am" seen at 10pm means tomorrow; "resets 2pm" seen at 2:01pm is the reset that just passed
+  // (31 Oct / 1 Nov: read as tomorrow 2pm, it blocked the runner for a day)
+  const behind = now.getTime() - today.getTime()
+  return { until: behind > JUST_PASSED_MS ? new Date(today.getTime() + 86_400_000) : today }
 }
 
 export const readLimit = (): LimitState | null => {

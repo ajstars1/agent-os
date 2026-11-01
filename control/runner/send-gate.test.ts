@@ -62,6 +62,10 @@ describe('checkBudget', () => {
     const v = checkBudget([run(30, 8), run(200, 8)], { maxRuns: 10, maxUsd: 15 }, now)
     expect(v.ok).toBe(false)
     expect(v.freeAt?.toISOString()).toBe(new Date(now.getTime() + 100 * 60_000).toISOString())
-    expect(checkBudget([run(1, 0), run(2, 0)], { maxRuns: 2, maxUsd: 15 }, now).ok).toBe(false)
+    expect(checkBudget([run(1, 0.5), run(2, 0.5)], { maxRuns: 2, maxUsd: 15 }, now).ok).toBe(false)
+  })
+
+  it('does not count $0 runs that died at the limit', () => {
+    expect(checkBudget([run(1, 0), run(2, 0), run(3, 0)], { maxRuns: 2, maxUsd: 15 }, now).ok).toBe(true)
   })
 })

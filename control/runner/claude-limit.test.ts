@@ -28,6 +28,13 @@ describe('parseLimit', () => {
       .toBe(at('2026-11-01T09:00:00+05:30').toISOString())
   })
 
+  it('knows the 5-hour wording and treats a reset that just passed as passed', () => {
+    const at2 = at('2026-11-01T14:01:00+05:30')
+    const r = parseLimit("You've hit your 5-hour limit · resets 2pm (Asia/Kolkata)", at2)
+    expect(r?.until?.toISOString()).toBe(at('2026-11-01T14:00:00+05:30').toISOString())
+    expect(blockedUntil({ until: r!.until!.toISOString(), since: at2.toISOString(), source: 'agent' }, at2)).toBeNull()
+  })
+
   it('reads the epoch form from headless runs', () => {
     expect(parseLimit('Claude AI usage limit reached|1761921000', NOW)?.until?.getTime()).toBe(1761921000 * 1000)
   })
