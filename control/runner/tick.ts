@@ -13,6 +13,9 @@ import { db, type Task } from '../lib/db'
 import { notify } from '../lib/discord'
 import { blockedUntil, fmtTime, parseLimit, readLimit, UNKNOWN_RETRY_MS, writeLimit } from '../lib/claude-limit'
 import { closeTask, fmtIst, getTask } from '../lib/tasks'
+import { budgetLimits, checkBudget, WINDOW_MS, type RecentRun } from '../lib/run-budget'
+import { approvalIdFromTitle, checkSend } from '../lib/send-gate'
+import type { Approval } from '../lib/db'
 import { pullMeshBackup } from './mesh-backup'
 import { runWatchers } from './watchers'
 import { allowHomeIp } from './mps-firewall'
@@ -21,6 +24,7 @@ const LOCK = join(import.meta.dir, '.lock')
 const RUN_TIMEOUT_MS = 25 * 60 * 1000
 const PING_EVERY_MS = 20 * 60 * 60 * 1000
 const DEFAULT_CWD = '/home/ubuntu/Developer/Ayush'
+const BUDGET_NOTE = join(import.meta.dir, '.budget-note')
 const LAST_IP = join(import.meta.dir, '.home-ip')
 const FAILED_IP = join(import.meta.dir, '.home-ip-failed')
 
@@ -31,7 +35,7 @@ Rules, in priority order:
 2. Never buy anything, delete anything, change account settings, accept terms or enter credentials. If login, a CAPTCHA or a payment is needed, stop and say so.
 3. Read and follow CLAUDE.md, notes/outreach-playbook.md and the plan file named in the task before acting. No em dashes in any copy.
 4. Read-only checks (inboxes, Ads Manager, dashboards) are fine. Log what you find in the plan file the task names, and call log_activity for every reply or accept.
-5. Browser: Claude in Chrome, in a new tab you close when done. "Disconnected" means Chrome is closed: run `bash ~/Developer/Ayush/agent-os/control/hooks/ensure-chrome.sh`, then retry twice. For sites the extension can't use (reddit.com), pilot-browser with mode "managed", profile "aos" works unattended; never mode "attach" here (it needs a person to click Allow). A site not logged in there: skip and say so.
+5. Browser: Claude in Chrome, in a new tab you close when done. "Disconnected" means Chrome is closed: run \`bash ~/Developer/Ayush/agent-os/control/hooks/ensure-chrome.sh\`, then retry twice. For sites the extension can't use (reddit.com), pilot-browser with mode "managed", profile "aos" works unattended; never mode "attach" here (it needs a person to click Allow). A site not logged in there: skip and say so.
 6. When finished, call task_done with the task id and a one-line note. If blocked, call task_update with status "todo" and the reason in notes.
 7. End with a plain summary of 8 lines or fewer: what you did, what needs Ayush.`
 
@@ -144,6 +148,56 @@ const runOne = async (): Promise<void> => {
   if (error) throw new Error(error.message)
   const next = (data as Task[])[0]
   if (!next) return
+
+  // Run budget: pause before Claude's hard limit so Ayush keeps headroom (lib/run-budget.ts).
+  const recent = await db()
+    .from('runs')
+    .select('started_at,cost_usd')
+    .gte('started_at', new Date(now().getTime() - WINDOW_MS).toISOString())
+  if (recent.error) throw new Error(recent.error.message)
+  const budget = checkBudget((recent.data ?? []) as RecentRun[], budgetLimits(), now())
+  if (!budget.ok) {
+    const until = budget.freeAt ? fmtTime(budget.freeAt) : 'later'
+    const note = `${until}`
+    if (!existsSync(BUDGET_NOTE) || readFileSync(BUDGET_NOTE, 'utf8') !== note) {
+      writeFileSync(BUDGET_NOTE, note)
+      await notify(
+        `⏸️ Runner paused to leave you Claude headroom: ${budget.runs} runs, $${budget.usd} in the last 5 h. ` +
+          `Due tasks (next: #${next.id}) start again around ${until}.`,
+      )
+    }
+    return
+  }
+
+  // Pre-send gate: an approved draft is checked with plain rules before Claude may send it.
+  const approvalId = approvalIdFromTitle(next.title)
+  if (approvalId !== null) {
+    const { data: ap, error: apErr } = await db().from('approvals').select('*').eq('id', approvalId).single()
+    if (apErr) throw new Error(apErr.message)
+    const approval = ap as Approval
+    if (approval.status === 'sent') {
+      await closeTask(next.id, 'skipped', `runner: approval #${approvalId} is already marked sent`)
+      return
+    }
+    const reasons =
+      approval.status !== 'approved'
+        ? [`approval #${approvalId} is ${approval.status}, not approved`]
+        : checkSend(approval.channel, approval.recipient, approval.draft).reasons
+    if (reasons.length) {
+      await db()
+        .from('tasks')
+        .update({
+          auto: false,
+          notes: [next.notes, `send gate blocked: ${reasons.join('; ')}`].filter(Boolean).join('\n'),
+        })
+        .eq('id', next.id)
+      await notify(
+        `🛑 Not sending #${next.id} (approval #${approvalId}): ${reasons.join('; ')}.\n` +
+          `Fix it with "edit ${approvalId}: <text>" or skip it with "skip ${next.id}".`,
+      )
+      return
+    }
+  }
 
   // Claim it; another tick or a human may have taken it meanwhile.
   const claimed = await db().from('tasks').update({ status: 'doing' }).eq('id', next.id).eq('status', 'todo').select('id')
