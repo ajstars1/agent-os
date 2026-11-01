@@ -39,6 +39,7 @@ describe('checkSend', () => {
     expect(r.reasons.join(' | ')).toContain('no email address')
     expect(checkSend('linkedin-dm', 'Riya', 'Hi [First Name]').reasons.length).toBe(2)
     expect(checkSend('linkedin-dm', 'Riya https://www.linkedin.com/in/example-person/', 'x'.repeat(1600)).reasons[0]).toContain('over the 1500 cap')
+    expect(checkSend('linkedin-dm', 'Arjun https://www.linkedin.com/messaging/thread/2-abc==/', 'Hey Arjun').ok).toBe(true)
   })
 
   it('reads the approval id from a send task title', () => {

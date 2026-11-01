@@ -68,7 +68,7 @@ export const checkSend = (channel: string, recipient: string | null, draft: stri
 
   const to = recipient ?? ''
   if (ch === 'gmail' && !EMAIL.test(to)) reasons.push('gmail recipient has no email address')
-  if (ch.startsWith('linkedin-dm') && !/linkedin\.com\/in\/|existing linkedin thread|existing thread/i.test(to)) {
+  if (ch.startsWith('linkedin-dm') && !/linkedin\.com\/(?:in|messaging\/thread)\/|existing linkedin thread|existing thread/i.test(to)) {
     reasons.push('linkedin-dm recipient has no profile URL or thread')
   }
   if (ch === 'reddit' && !/\br\/\w+|\bu\/\w+|reddit\.com\//i.test(to)) reasons.push('reddit recipient names no subreddit or user')
