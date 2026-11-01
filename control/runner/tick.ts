@@ -15,6 +15,7 @@ import { blockedUntil, fmtTime, parseLimit, readLimit, UNKNOWN_RETRY_MS, writeLi
 import { closeTask, fmtIst, getTask } from '../lib/tasks'
 import { budgetLimits, checkBudget, WINDOW_MS, type RecentRun } from '../lib/run-budget'
 import { approvalIdFromTitle, checkSend } from '../lib/send-gate'
+import { pickNext } from '../lib/task-priority'
 import type { Approval } from '../lib/db'
 import { pullMeshBackup } from './mesh-backup'
 import { runWatchers } from './watchers'
@@ -144,9 +145,9 @@ const runOne = async (): Promise<void> => {
     .eq('auto', true)
     .lte('due_at', now().toISOString())
     .order('due_at')
-    .limit(1)
+    .limit(50)
   if (error) throw new Error(error.message)
-  const next = (data as Task[])[0]
+  const next = pickNext(data as Task[])
   if (!next) return
 
   // Run budget: pause before Claude's hard limit so Ayush keeps headroom (lib/run-budget.ts).

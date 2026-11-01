@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'bun:test'
 import { approvalIdFromTitle, checkSend, sendableText } from '../lib/send-gate'
 import { checkBudget } from '../lib/run-budget'
+import { pickNext } from '../lib/task-priority'
 
 const GMAIL = `SEND AS A REPLY IN THE EXISTING GMAIL THREAD (this header is not part of the email)
 From: a@b.com
@@ -67,5 +68,19 @@ describe('checkBudget', () => {
 
   it('does not count $0 runs that died at the limit', () => {
     expect(checkBudget([run(1, 0), run(2, 0), run(3, 0)], { maxRuns: 2, maxUsd: 15 }, now).ok).toBe(true)
+  })
+})
+
+describe('pickNext', () => {
+  it('sends a reply in a live conversation before cold emails that are due earlier', () => {
+    const t = (title: string, due: string) => ({ title, due_at: due })
+    const tasks = [
+      t('SEND APPROVED #19 (gmail to contact@example.net)', '2026-11-01T04:00:00Z'),
+      t('Reply check (evening)', '2026-11-01T03:00:00Z'),
+      t('SEND APPROVED #30 (linkedin-dm to Surya Prakash (Crown Vet CMO), existing LinkedIn thread)', '2026-11-01T08:33:00Z'),
+    ]
+    expect(pickNext(tasks)?.title).toContain('#30')
+    expect(pickNext(tasks.slice(0, 2))?.title).toContain('#19')
+    expect(pickNext([])).toBeUndefined()
   })
 })
