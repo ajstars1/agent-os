@@ -3,6 +3,7 @@ import type { ActivityRow, ApprovalRow, GoalRow, RunRow, TaskRow } from '../../.
 import { ago, daysLate, fmtDate, fmtDue, fmtDay, fmtTime, whenBucket } from '../../../lib/time'
 import { ventureMeta } from '../../../lib/ventures'
 import { StateMark, VentureDot, VentureTag, money, ownerName, taskMark } from './bits'
+import { DraftDecision } from './draft-decision'
 
 export const TaskItem = ({ t, now, showVenture = true }: { t: TaskRow; now: string; showVenture?: boolean }) => {
   const open = t.status !== 'done' && t.status !== 'skipped'
@@ -53,15 +54,19 @@ export const DraftItem = ({ a, now }: { a: ApprovalRow; now: string }) => {
           <p className="mt-1 line-clamp-2 text-sm text-dim">{a.draft}</p>
           <p className="mt-2 text-xs">
             <StateMark mark={mark} />
-            <span className="ml-2 text-faint">tap to read</span>
+            <span className="ml-2 text-faint">{a.status === 'pending' ? 'tap to read and decide' : 'tap to read'}</span>
           </p>
         </summary>
         <div className="border-t border-line px-4 py-3">
           <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{a.draft}</p>
           {a.result ? <p className="mt-3 text-sm whitespace-pre-wrap break-words text-dim">Result: {a.result}</p> : null}
+          {a.status === 'pending' ? (
+            <DraftDecision id={a.id} target={`${a.channel}${a.recipient ? ` to ${a.recipient}` : ''}`} />
+          ) : null}
           <p className="mt-3 text-xs text-faint">
             Draft #{a.id}
-            {a.task_id ? ` for task #${a.task_id}` : ''}. Reply yes {a.id} or no {a.id} in the Discord DM.
+            {a.task_id ? ` for task #${a.task_id}` : ''}
+            {a.decided_at ? `, decided ${ago(a.decided_at, now)}` : ''}.
           </p>
         </div>
       </details>
