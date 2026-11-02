@@ -2,58 +2,67 @@
 
 import { cookies, headers } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { SESSION_COOKIE, SESSION_TTL_S, checkPasscode, createSession, isDashboardConfigured } from '../../lib/auth'
+import { db } from '../../lib/db'
+import { SESSION_COOKIE, SESSION_TTL_S, checkPasscode, createSession, hashIp, isDashboardConfigured } from '../../lib/auth'
 
-// Best-effort brute-force brake: per-instance counter per IP plus a fixed delay on every miss.
-const WINDOW_MS = 15 * 60 * 1000
+// Brute-force brake shared by every server instance (table login_attempts, migration 20261102120000):
+// 5 failed attempts per IP in 15 minutes locks that IP out, plus a fixed delay on every miss.
+const WINDOW_S = 15 * 60
 const MAX_FAILS = 5
-const fails = new Map<string, { n: number; first: number }>()
+
+class LoginGateError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LoginGateError'
+  }
+}
 
 const clientIp = async (): Promise<string> => {
   const h = await headers()
   return h.get('x-real-ip') ?? h.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
 }
 
-const isLocked = (ip: string, now: number): boolean => {
-  const f = fails.get(ip)
-  if (!f) return false
-  if (now - f.first > WINDOW_MS) {
-    fails.delete(ip)
-    return false
-  }
-  return f.n >= MAX_FAILS
+const beginAttempt = async (ipHash: string): Promise<{ id: number; locked: boolean }> => {
+  const { data, error } = await db().rpc('login_attempt_begin', {
+    p_ip_hash: ipHash,
+    p_window_s: WINDOW_S,
+    p_max: MAX_FAILS,
+  })
+  if (error) throw new LoginGateError(error.message)
+  const row = (Array.isArray(data) ? data[0] : data) as { attempt_id: number; locked: boolean } | undefined
+  if (!row) throw new LoginGateError('login_attempt_begin returned nothing')
+  return { id: row.attempt_id, locked: row.locked }
 }
 
-const recordFail = (ip: string, now: number): void => {
-  const f = fails.get(ip)
-  if (!f || now - f.first > WINDOW_MS) fails.set(ip, { n: 1, first: now })
-  else f.n += 1
-  if (fails.size > 1000) fails.clear()
+const finishAttempt = async (id: number, ok: boolean): Promise<void> => {
+  const { error } = await db().rpc('login_attempt_finish', { p_attempt_id: id, p_ok: ok })
+  if (error) throw new LoginGateError(error.message)
 }
 
 export const login = async (formData: FormData): Promise<never> => {
   if (!isDashboardConfigured()) redirect('/login?e=setup')
   const raw = formData.get('passcode')
   const input = typeof raw === 'string' ? raw.slice(0, 200) : ''
-  const ip = await clientIp()
-  const now = Date.now()
-  if (isLocked(ip, now)) redirect('/login?e=locked')
 
+  // Fails closed: if the brake can't be read or written, nobody signs in.
   let ok = false
   try {
+    const attempt = await beginAttempt(await hashIp(await clientIp()))
+    if (attempt.locked) redirect('/login?e=locked')
     ok = input.length > 0 && (await checkPasscode(input))
-  } catch {
-    ok = false
+    await finishAttempt(attempt.id, ok)
+  } catch (err) {
+    if (err instanceof LoginGateError) redirect('/login?e=unavailable')
+    throw err // redirect() signals by throwing; let it through
   }
+
   if (!ok) {
-    recordFail(ip, now)
     await new Promise((r) => setTimeout(r, 600))
     redirect('/login?e=bad')
   }
 
-  fails.delete(ip)
   const jar = await cookies()
-  jar.set(SESSION_COOKIE, await createSession(now), {
+  jar.set(SESSION_COOKIE, await createSession(), {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',

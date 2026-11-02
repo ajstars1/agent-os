@@ -6,6 +6,7 @@ const MESSAGES: Record<string, string> = {
   bad: 'Wrong passcode.',
   locked: 'Too many tries. Wait 15 minutes.',
   setup: 'AOS_DASHBOARD_PASSCODE is not set on the server (8+ characters).',
+  unavailable: 'Sign-in is unavailable right now (database). Try again shortly.',
 }
 
 const LoginPage = async ({ searchParams }: { searchParams: Promise<{ e?: string }> }) => {

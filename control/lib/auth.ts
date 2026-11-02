@@ -44,6 +44,13 @@ export const checkPasscode = async (input: string): Promise<boolean> => {
   return safeEqual(a, b)
 }
 
+// Keyed hash of the client IP for the login brake, so raw IPs never reach the database.
+export const hashIp = async (ip: string): Promise<string> => {
+  const p = passcode()
+  if (!p) throw new Error('AOS_DASHBOARD_PASSCODE is not set')
+  return hmac(p, `ip:${ip}`)
+}
+
 export const createSession = async (now: number = Date.now()): Promise<string> => {
   const p = passcode()
   if (!p) throw new Error('AOS_DASHBOARD_PASSCODE is not set')
