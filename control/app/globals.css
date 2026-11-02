@@ -1,0 +1,16 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 4rem;
+}
+
+body {
+  background: #0b0d10;
+  color: #e6e8eb;
+  -webkit-text-size-adjust: 100%;
+}
