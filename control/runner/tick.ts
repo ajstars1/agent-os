@@ -16,6 +16,7 @@ import { closeTask, fmtIst, getTask } from '../lib/tasks'
 import { budgetLimits, checkBudget, WINDOW_MS, type RecentRun } from '../lib/run-budget'
 import { approvalIdFromTitle, checkSend } from '../lib/send-gate'
 import { pickNext } from '../lib/task-priority'
+import { decideOutcome, parseRunResult } from '../lib/run-result'
 import type { Approval } from '../lib/db'
 import { pullMeshBackup } from './mesh-backup'
 import { runWatchers } from './watchers'
@@ -38,7 +39,10 @@ Rules, in priority order:
 4. Read-only checks (inboxes, Ads Manager, dashboards) are fine. Log what you find in the plan file the task names, and call log_activity for every reply or accept.
 5. Browser: Claude in Chrome, in a new tab you close when done. "Disconnected" means Chrome is closed: run \`bash ~/Developer/Ayush/agent-os/control/hooks/ensure-chrome.sh\`, then retry twice. For sites the extension can't use (reddit.com), pilot-browser with mode "managed", profile "aos" works unattended; never mode "attach" here (it needs a person to click Allow). A site not logged in there: skip and say so.
 6. When finished, call task_done with the task id and a one-line note. If blocked, call task_update with status "todo" and the reason in notes.
-7. End with a plain summary of 8 lines or fewer: what you did, what needs Ayush.`
+7. End with a plain summary of 8 lines or fewer: what you did, what needs Ayush.
+8. The very last line of your reply must be exactly one result line, JSON on one line:
+AOS_RESULT {"status":"done","summary":"<one line>"}
+status is "done" only if the task's goal was met, "blocked" if you could not proceed (login, CAPTCHA, missing input), "failed" otherwise. Without this line (or task_done) the run counts as unverified and the task is retried.`
 
 const now = (): Date => new Date()
 
@@ -232,11 +236,21 @@ const runOne = async (): Promise<void> => {
     return
   }
 
+  // Settle the task. Exit 0 alone is not success: the run must call task_done or print an AOS_RESULT line.
+  const after = await getTask(next.id)
+  const outcome = decideOutcome({
+    exitOk: ok,
+    timedOut,
+    statusAfter: after.status,
+    result: parseRunResult(out.result),
+    runId: runId ?? null,
+  })
+
   if (runId) {
     await db()
       .from('runs')
       .update({
-        status: timedOut ? 'timeout' : ok ? 'ok' : 'error',
+        status: outcome.run,
         summary,
         session_id: out.session_id ?? null,
         cost_usd: out.total_cost_usd ?? null,
@@ -245,21 +259,21 @@ const runOne = async (): Promise<void> => {
       .eq('id', runId)
   }
 
-  // If Claude didn't close the task itself, settle it here.
-  const after = await getTask(next.id)
-  if (after.status === 'doing') {
-    if (ok) {
-      await closeTask(next.id, 'done', 'runner: run finished')
-    } else {
-      const retry = new Date(now().getTime() + 60 * 60 * 1000).toISOString()
-      await db()
-        .from('tasks')
-        .update({ status: 'todo', due_at: retry, notes: [after.notes, `run ${runId} failed, retry in 1 h`].filter(Boolean).join('\n') })
-        .eq('id', next.id)
-    }
+  if (outcome.task.kind === 'done') {
+    await closeTask(next.id, 'done', outcome.task.note)
+  } else if (outcome.task.kind === 'todo') {
+    await db()
+      .from('tasks')
+      .update({
+        status: 'todo',
+        due_at: new Date(now().getTime() + outcome.task.retryMs).toISOString(),
+        notes: [after.notes, outcome.task.note].filter(Boolean).join('\n'),
+      })
+      .eq('id', next.id)
+      .eq('status', 'doing')
   }
 
-  const icon = timedOut ? '⏱️' : ok ? '✅' : '⚠️'
+  const icon = { ok: '✅', timeout: '⏱️', error: '⚠️', unverified: '❔', blocked: '🚧' }[outcome.run]
   await notify(`${icon} **#${next.id} ${next.title}** (run ${runId ?? '?'})\n${summary || '(no output)'}`)
 }
 
