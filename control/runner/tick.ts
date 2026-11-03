@@ -46,6 +46,15 @@ status is "done" only if the task's goal was met, "blocked" if you could not pro
 
 const now = (): Date => new Date()
 
+// Coordinator mode (on in Ayush's user settings) turns a run into a fan-out of subagents. Runner sessions do one
+// task, so it is off: dropped from the child env and overridden in flag settings, which outrank user settings.
+const NO_COORDINATOR_SETTINGS = JSON.stringify({ env: { CLAUDE_CODE_COORDINATOR_MODE: '0' } })
+const childEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env }
+  delete env.CLAUDE_CODE_COORDINATOR_MODE
+  return env
+}
+
 const istHour = (d: Date): number =>
   Number(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }))
 
@@ -109,8 +118,11 @@ const runClaude = (task: Task): Promise<{ code: number | null; out: ClaudeResult
     const child = spawn(
       'claude',
       // unattended runs never drive the desktop: Ayush may be using it
-      ['-p', prompt, '--permission-mode', 'auto', '--output-format', 'json', '--chrome', '--disallowedTools', 'mcp__desk', '--append-system-prompt', RULES],
-      { cwd: task.cwd ?? DEFAULT_CWD, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+      [
+        '-p', prompt, '--permission-mode', 'auto', '--output-format', 'json', '--chrome', '--disallowedTools', 'mcp__desk',
+        '--settings', NO_COORDINATOR_SETTINGS, '--append-system-prompt', RULES,
+      ],
+      { cwd: task.cwd ?? DEFAULT_CWD, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
     )
     let stdout = ''
     child.stdout.on('data', (b: Buffer) => (stdout += b.toString()))

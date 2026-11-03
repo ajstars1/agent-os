@@ -40,8 +40,11 @@ skip ones already answered by the Gemini fallback (🌐) or by an approval card.
 # The plugin is disabled at user scope (it would log every Claude session in as the bot); enable it here only.
 # Nobody watches this terminal, so commands the user settings only "ask" for are denied here: the session gets an
 # error it can report on Discord instead of freezing at a prompt (aos-watch relays any prompt that still appears).
+# Coordinator mode (on in the user settings) is off here: dropped from the env and overridden in flag settings,
+# which outrank user settings. ~/.claude/settings.json is left alone.
+unset CLAUDE_CODE_COORDINATOR_MODE
 exec claude "${session[@]}" --name aos-discord \
   --channels plugin:discord@claude-plugins-official --permission-mode auto --chrome \
-  --settings '{"enabledPlugins":{"discord@claude-plugins-official":true},"permissions":{"deny":["Bash(git checkout:*)"]}}' \
+  --settings '{"enabledPlugins":{"discord@claude-plugins-official":true},"permissions":{"deny":["Bash(git checkout:*)"]},"env":{"CLAUDE_CODE_COORDINATOR_MODE":"0"}}' \
   --append-system-prompt "$(cat /home/ubuntu/Developer/Ayush/agent-os/control/systemd/discord-agent.md)" \
   "$start"
