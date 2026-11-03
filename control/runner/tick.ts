@@ -6,7 +6,7 @@
 //  4. once a day copies the newest MeshCentral backup to ~/Backups/aos-mesh (runner/mesh-backup.ts)
 //  3. if the home public IP changed, moves the MeshCentral MPS firewall to it (runner/mps-firewall.ts)
 // Run from the control/ directory: `bun runner/tick.ts` (Bun loads .env.local).
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db, type Task } from '../lib/db'
@@ -17,6 +17,7 @@ import { budgetLimits, checkBudget, WINDOW_MS, type RecentRun } from '../lib/run
 import { approvalIdFromTitle, checkSend } from '../lib/send-gate'
 import { pickNext } from '../lib/task-priority'
 import { decideOutcome, parseRunResult } from '../lib/run-result'
+import { decideBlock, needsOf, preflight } from './preflight'
 import type { Approval } from '../lib/db'
 import { pullMeshBackup } from './mesh-backup'
 import { runWatchers } from './watchers'
@@ -143,11 +144,36 @@ const runClaude = (task: Task): Promise<{ code: number | null; out: ClaudeResult
     })
   })
 
-// Tasks may need Claude in Chrome; after an unattended boot Chrome is not running yet.
-const ensureChrome = async (): Promise<void> => {
-  if (spawnSync('pgrep', ['-x', 'chrome']).status === 0) return
-  spawnSync('hyprctl', ['dispatch', 'exec', 'google-chrome-stable'])
-  await new Promise((r) => setTimeout(r, 10_000))
+// Preflight failed: record a zero-cost 'skipped' run (no spawn). The second identical block in a row pauses the task.
+const recordBlock = async (task: Task, reason: string): Promise<void> => {
+  const prev = await db()
+    .from('runs')
+    .select('status, summary')
+    .eq('task_id', task.id)
+    .order('started_at', { ascending: false })
+    .limit(1)
+  if (prev.error) throw new Error(prev.error.message)
+  const last = (prev.data?.[0] ?? null) as { status: string; summary: string | null } | null
+  const action = decideBlock(last, reason)
+  const ins = await db()
+    .from('runs')
+    .insert({ task_id: task.id, trigger: 'timer', status: 'skipped', summary: reason, cost_usd: 0, finished_at: now().toISOString() })
+  if (ins.error) throw new Error(ins.error.message)
+  if (action.kind === 'retry') {
+    const upd = await db()
+      .from('tasks')
+      .update({ due_at: new Date(now().getTime() + action.retryMs).toISOString() })
+      .eq('id', task.id)
+      .eq('status', 'todo')
+    if (upd.error) throw new Error(upd.error.message)
+    return
+  }
+  const upd = await db()
+    .from('tasks')
+    .update({ auto: false, notes: [task.notes, `${reason} (twice in a row): auto paused ${fmtIst(now().toISOString())}`].filter(Boolean).join('\n') })
+    .eq('id', task.id)
+  if (upd.error) throw new Error(upd.error.message)
+  await notify(`🩺 Paused #${task.id} ${task.title}: ${reason.replace(/^preflight: /, '')} (twice). Fix it, then turn auto back on for #${task.id}.`)
 }
 
 const runOne = async (): Promise<void> => {
@@ -188,10 +214,11 @@ const runOne = async (): Promise<void> => {
 
   // Pre-send gate: an approved draft is checked with plain rules before Claude may send it.
   const approvalId = approvalIdFromTitle(next.title)
+  let approval: Approval | null = null
   if (approvalId !== null) {
     const { data: ap, error: apErr } = await db().from('approvals').select('*').eq('id', approvalId).single()
     if (apErr) throw new Error(apErr.message)
-    const approval = ap as Approval
+    approval = ap as Approval
     if (approval.status === 'sent') {
       await closeTask(next.id, 'skipped', `runner: approval #${approvalId} is already marked sent`)
       return
@@ -216,13 +243,19 @@ const runOne = async (): Promise<void> => {
     }
   }
 
+  // Health preflight: browser and needed logins up, or skip without spawning (no tokens).
+  const blocked = await preflight(needsOf(next, approval?.channel), now().getTime())
+  if (blocked) {
+    await recordBlock(next, blocked)
+    return
+  }
+
   // Claim it; another tick or a human may have taken it meanwhile.
   const claimed = await db().from('tasks').update({ status: 'doing' }).eq('id', next.id).eq('status', 'todo').select('id')
   if (!claimed.data?.length) return
 
   const run = await db().from('runs').insert({ task_id: next.id, trigger: 'timer' }).select('id').single()
   const runId = (run.data as { id: number } | null)?.id
-  await ensureChrome()
   const { code, out, timedOut } = await runClaude(next)
   const ok = code === 0 && !out.is_error && !timedOut
   const summary = (out.result ?? '').trim().slice(0, 3000)
