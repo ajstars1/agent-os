@@ -1,6 +1,7 @@
 import { db, type Approval, type CalendarEvent, type Kind, type Owner, type Task, type TaskStatus } from './db'
 import { notify } from './discord'
 import { isValidRecur, nextDue } from './recur'
+import { recordTouch } from './touches'
 
 const OPEN: TaskStatus[] = ['todo', 'doing', 'waiting_approval']
 const IST = 'Asia/Kolkata'
@@ -249,6 +250,10 @@ export const markApprovalSent = async (id: number, result: string, failed = fals
       .select('*')
       .single(),
   ) as Approval
+  if (!failed) {
+    // the send already happened; a counter hiccup must not turn it into an error
+    await recordTouch(ap).catch(() => undefined)
+  }
   if (!failed && ap.task_id) {
     const { count } = await db()
       .from('approvals')

@@ -14,7 +14,8 @@ import { notify } from '../lib/discord'
 import { blockedUntil, fmtTime, parseLimit, readLimit, UNKNOWN_RETRY_MS, writeLimit } from '../lib/claude-limit'
 import { closeTask, fmtIst, getTask } from '../lib/tasks'
 import { budgetLimits, checkBudget, WINDOW_MS, type RecentRun } from '../lib/run-budget'
-import { approvalIdFromTitle, checkSend } from '../lib/send-gate'
+import { approvalIdFromTitle, checkSend, holdReason, recipientKeys, touchReason } from '../lib/send-gate'
+import { priorTouches, recordTouch } from '../lib/touches'
 import { pickNext } from '../lib/task-priority'
 import { decideOutcome, parseRunResult } from '../lib/run-result'
 import { decideBlock, needsOf, preflight } from './preflight'
@@ -114,6 +115,31 @@ const runClaude = (task: Task, mcpConfig: string): Promise<{ code: number | null
     })
   })
 
+const blockSend = async (task: Task, approval: Approval, reasons: string[]): Promise<void> => {
+  const upd = await db()
+    .from('tasks')
+    .update({ auto: false, notes: [task.notes, `send gate blocked: ${reasons.join('; ')}`].filter(Boolean).join('\n') })
+    .eq('id', task.id)
+  if (upd.error) throw new Error(upd.error.message)
+  await notify(
+    `🛑 Not sending #${task.id} (approval #${approval.id}): ${reasons.join('; ')}.\n` +
+      `Fix it with "edit ${approval.id}: <text>" or skip it with "skip ${task.id}".`,
+  )
+}
+
+const sendGateReasons = async (taskId: number, approval: Approval): Promise<string[]> => {
+  const fresh = await getTask(taskId)
+  const parentIds = [...new Set([fresh.parent_id, approval.task_id].filter((n): n is number => n !== null && n !== taskId))]
+  const parents = await Promise.all(parentIds.map((id) => getTask(id).catch(() => null)))
+  const reasons = [...checkSend(approval.channel, approval.recipient, approval.draft).reasons]
+  const hold = holdReason([fresh, ...parents.filter((p): p is Task => p !== null)])
+  if (hold) reasons.push(hold)
+  const keys = recipientKeys(approval.channel, approval.recipient, approval.draft)
+  const touch = touchReason(keys, await priorTouches(keys, approval.id))
+  if (touch) reasons.push(touch)
+  return reasons
+}
+
 // Preflight failed: record a zero-cost 'skipped' run (no spawn). The second identical block in a row pauses the task.
 const recordBlock = async (task: Task, reason: string): Promise<void> => {
   const prev = await db()
@@ -193,22 +219,8 @@ const runOne = async (): Promise<void> => {
       await closeTask(next.id, 'skipped', `runner: approval #${approvalId} is already marked sent`)
       return
     }
-    const reasons =
-      approval.status !== 'approved'
-        ? [`approval #${approvalId} is ${approval.status}, not approved`]
-        : checkSend(approval.channel, approval.recipient, approval.draft).reasons
-    if (reasons.length) {
-      await db()
-        .from('tasks')
-        .update({
-          auto: false,
-          notes: [next.notes, `send gate blocked: ${reasons.join('; ')}`].filter(Boolean).join('\n'),
-        })
-        .eq('id', next.id)
-      await notify(
-        `🛑 Not sending #${next.id} (approval #${approvalId}): ${reasons.join('; ')}.\n` +
-          `Fix it with "edit ${approvalId}: <text>" or skip it with "skip ${next.id}".`,
-      )
+    if (approval.status !== 'approved') {
+      await blockSend(next, approval, [`approval #${approvalId} is ${approval.status}, not approved`])
       return
     }
   }
@@ -218,6 +230,16 @@ const runOne = async (): Promise<void> => {
   if (blocked) {
     await recordBlock(next, blocked)
     return
+  }
+
+  // Send gate, right before the spawn: fresh task and parent notes (a hold added after approval wins),
+  // the per-recipient touch cap and the plain draft rules.
+  if (approval) {
+    const reasons = await sendGateReasons(next.id, approval)
+    if (reasons.length) {
+      await blockSend(next, approval, reasons)
+      return
+    }
   }
 
   const mcpConfig = writeMcpConfig()
@@ -289,6 +311,12 @@ const runOne = async (): Promise<void> => {
       })
       .eq('id', next.id)
       .eq('status', 'doing')
+  }
+
+  // Count the touch here too (the MCP's approval_mark_sent also does once deployed; both are idempotent).
+  if (approval) {
+    const sent = await db().from('approvals').select('*').eq('id', approval.id).single()
+    if (!sent.error && (sent.data as Approval).status === 'sent') await recordTouch(sent.data as Approval).catch(() => undefined)
   }
 
   const icon = { ok: '✅', timeout: '⏱️', error: '⚠️', unverified: '❔', blocked: '🚧' }[outcome.run]

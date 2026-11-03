@@ -81,3 +81,59 @@ export const approvalIdFromTitle = (title: string): number | null => {
   const m = /^SEND APPROVED #(\d+)\b/.exec(title)
   return m ? Number(m[1]) : null
 }
+
+// A note on the send task or its parent saying hold / held / "don't send" stops the send. Checked right before
+// the runner starts the send, so a hold added after approval still wins.
+const HOLD = /\b(?:on\s+hold|hold|held)\b|\bdon['’]?t\s+send\b|\bdo\s+not\s+send\b/i
+
+export const holdReason = (notes: { id: number; notes: string | null }[]): string | null => {
+  for (const t of notes) {
+    const line = (t.notes ?? '').split('\n').find((l) => HOLD.test(l))
+    if (line) return `task #${t.id} notes say hold: "${line.trim().slice(0, 120)}"`
+  }
+  return null
+}
+
+// Public posts, reposts and comments go to no one in particular, so they are not touches.
+const isBroadcast = (ch: string, to: string): boolean =>
+  /post|repost|comment|indiehackers/.test(ch) || (ch === 'reddit' && !/\bu\/\w+/i.test(to))
+
+// Every handle we can see for the person (LinkedIn profile, LinkedIn thread, email, Reddit user, name), so
+// touches add up even when one approval names a profile URL and the next only a thread or a name.
+// The recipient field comes first; with no recipient, the draft's header (the part not sent) is used.
+export const recipientKeys = (channel: string, recipient: string | null, draft = ''): string[] => {
+  const ch = channel.toLowerCase()
+  const to = recipient ?? ''
+  if (isBroadcast(ch, to)) return []
+  const handles = (text: string): string[] => {
+    const li = /linkedin\.com\/in\/([A-Za-z0-9%_-]+)/i.exec(text)
+    const thread = /linkedin\.com\/messaging\/thread\/([A-Za-z0-9%=_-]+)/i.exec(text)
+    const email = EMAIL.exec(text)
+    const reddit = /\bu\/([A-Za-z0-9_-]+)/i.exec(text)
+    return [
+      li && `linkedin:${li[1].toLowerCase()}`,
+      thread && `linkedin-thread:${thread[1]}`,
+      email && `email:${email[0].toLowerCase()}`,
+      reddit && `reddit:${reddit[1].toLowerCase()}`,
+    ].filter((k): k is string => Boolean(k))
+  }
+  // "Dr Surya Prakash (Crown Vet CMO), existing thread" → name:surya prakash
+  const name = to
+    .split(/[,(<|]| - | – |https?:\/\//)[0]
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:dr|mr|mrs|ms|prof)\.?\s+/, '')
+    .replace(/\s+/g, ' ')
+  const named = name && !/^(?:existing|same|their|his|her)\b|^[ur]\//.test(name) && !EMAIL.test(name) ? [`name:${name}`] : []
+  const keys = [...handles(to), ...named]
+  if (keys.length) return [...new Set(keys)]
+  return handles(draft.replace(sendableText(draft), ''))
+}
+
+export const MAX_TOUCHES = 2
+
+// priorTouches = approvals already sent to this person (not counting this one).
+export const touchReason = (keys: string[], priorTouches: number): string | null =>
+  keys.length && priorTouches >= MAX_TOUCHES
+    ? `${keys[0]} already has ${priorTouches} touches; a third is blocked (one-DM rule)`
+    : null

@@ -1,6 +1,6 @@
 // bun test runner/send-gate.test.ts  (lives in runner/ because bun:test types are outside the Next type-check)
 import { describe, expect, it } from 'bun:test'
-import { approvalIdFromTitle, checkSend, sendableText } from '../lib/send-gate'
+import { approvalIdFromTitle, checkSend, holdReason, recipientKeys, sendableText, touchReason } from '../lib/send-gate'
 import { checkBudget } from '../lib/run-budget'
 import { pickNext } from '../lib/task-priority'
 
@@ -83,5 +83,49 @@ describe('pickNext', () => {
     expect(pickNext(tasks)?.title).toContain('#30')
     expect(pickNext(tasks.slice(0, 2))?.title).toContain('#19')
     expect(pickNext([])).toBeUndefined()
+  })
+})
+
+describe('holdReason', () => {
+  it('blocks on hold, held or "don\'t send" in the task or parent notes', () => {
+    expect(holdReason([{ id: 1, notes: 'drafted\nHOLD until the demo is fixed' }])).toContain('task #1')
+    expect(holdReason([{ id: 1, notes: null }, { id: 2, notes: 'Ayush: don’t send yet' }])).toContain('task #2')
+    expect(holdReason([{ id: 3, notes: 'held for Monday' }])).toContain('#3')
+    expect(holdReason([{ id: 4, notes: 'do not send to the CEO' }])).toContain('#4')
+  })
+  it('ignores words that only contain hold', () => {
+    expect(holdReason([{ id: 1, notes: 'stakeholder intro; threshold 3; household brand' }])).toBeNull()
+    expect(holdReason([{ id: 1, notes: 'approved, send today' }])).toBeNull()
+  })
+})
+
+describe('recipientKeys', () => {
+  it('collects every handle for the person', () => {
+    expect(recipientKeys('linkedin-connect', 'Jane Roe, founder Acme (YC S22) https://www.linkedin.com/in/JaneRoe/')).toEqual([
+      'linkedin:janeroe',
+      'name:jane roe',
+    ])
+    expect(recipientKeys('gmail', 'Jane Roe <Jane@Acme.io>')).toEqual(['email:jane@acme.io', 'name:jane roe'])
+    expect(recipientKeys('linkedin-dm', 'Dr Sam Lee (CMO), existing LinkedIn thread')).toEqual(['name:sam lee'])
+    expect(recipientKeys('gmail', 'jane@acme.io')).toEqual(['email:jane@acme.io'])
+  })
+  it('falls back to the draft header when there is no recipient', () => {
+    expect(recipientKeys('gmail', null, 'To: sam@x.io (header, not part of the email)\n\nEMAIL BODY:\nHi Sam')).toEqual(['email:sam@x.io'])
+  })
+  it('public posts and comments are not touches', () => {
+    expect(recipientKeys('linkedin-post', "Ayush's own feed")).toEqual([])
+    expect(recipientKeys('reddit', 'r/StartUpIndia (new post)')).toEqual([])
+    expect(recipientKeys('reddit', 'u/someone (DM)')).toEqual(['reddit:someone'])
+  })
+})
+
+describe('touchReason', () => {
+  it('allows two touches and blocks the third', () => {
+    expect(touchReason(['name:jane roe'], 0)).toBeNull()
+    expect(touchReason(['name:jane roe'], 1)).toBeNull()
+    expect(touchReason(['name:jane roe'], 2)).toContain('third is blocked')
+  })
+  it('no handle, no counter', () => {
+    expect(touchReason([], 5)).toBeNull()
   })
 })
