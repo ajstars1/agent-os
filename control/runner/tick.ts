@@ -246,10 +246,16 @@ const runOne = async (): Promise<void> => {
 
   // Claim it; another tick or a human may have taken it meanwhile.
   const claimed = await db().from('tasks').update({ status: 'doing' }).eq('id', next.id).eq('status', 'todo').select('id')
+  if (claimed.error) throw new Error(`claim #${next.id}: ${claimed.error.message}`)
   if (!claimed.data?.length) return
 
   const run = await db().from('runs').insert({ task_id: next.id, trigger: 'timer' }).select('id').single()
   const runId = (run.data as { id: number } | null)?.id
+  if (run.error || !runId) {
+    // never spawn an untracked run: its cost would escape the run budget
+    await db().from('tasks').update({ status: 'todo' }).eq('id', next.id).eq('status', 'doing')
+    throw new Error(`run insert for #${next.id}: ${run.error?.message ?? 'no id returned'}`)
+  }
   const { code, out, timedOut } = await runClaude(next, mcpConfig)
   // a run stopped by --max-turns or --max-budget-usd is a failure, not a quiet success
   const ok = code === 0 && !out.is_error && !timedOut && !(out.subtype ?? '').startsWith('error')
@@ -277,7 +283,8 @@ const runOne = async (): Promise<void> => {
   }
 
   // Settle the task. Exit 0 alone is not success: the run must call task_done or print an AOS_RESULT line.
-  const after = await getTask(next.id)
+  // a task soft-deleted during the run counts as settled
+  const after = await getTask(next.id).catch(() => ({ ...next, status: 'skipped' as const }))
   const outcome = decideOutcome({
     exitOk: ok,
     timedOut,

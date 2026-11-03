@@ -255,12 +255,13 @@ export const markApprovalSent = async (id: number, result: string, failed = fals
     await recordTouch(ap).catch(() => undefined)
   }
   if (!failed && ap.task_id) {
-    const { count } = await db()
+    const { count, error } = await db()
       .from('approvals')
       .select('id', { count: 'exact', head: true })
       .eq('task_id', ap.task_id)
       .in('status', ['pending', 'approved'])
-    if (!count) {
+    // an error is not "zero left": leave the parent open rather than close it early
+    if (!error && count === 0) {
       const t = await getTask(ap.task_id)
       if (t.status === 'waiting_approval') await closeTask(ap.task_id, 'done', 'all approved drafts sent')
     }
