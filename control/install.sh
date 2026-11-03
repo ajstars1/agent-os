@@ -8,7 +8,8 @@ UNITS="$HOME/.config/systemd/user"
 mkdir -p "$UNITS"
 
 echo "1/3 systemd user units"
-for f in aos-tick.service aos-tick.timer aos-discord.service aos-watch.service claude-rc.service aos-vnc.service; do
+for f in aos-tick.service aos-tick.timer aos-discord.service aos-discord-fresh.service aos-discord-fresh.timer \
+  aos-watch.service claude-rc.service aos-vnc.service; do
   ln -sf "$HERE/systemd/$f" "$UNITS/$f"
 done
 systemctl --user daemon-reload
@@ -16,7 +17,7 @@ systemctl --user enable --now aos-tick.timer
 systemctl --user enable --now claude-rc.service
 for arg in "$@"; do
   case "$arg" in
-    --discord) systemctl --user enable --now aos-discord.service aos-watch.service ;;
+    --discord) systemctl --user enable --now aos-discord.service aos-watch.service aos-discord-fresh.timer ;;
     --vnc) command -v wayvnc >/dev/null || { echo "wayvnc missing: sudo apt install -y wayvnc"; exit 1; }
            systemctl --user enable --now aos-vnc.service ;;
   esac
