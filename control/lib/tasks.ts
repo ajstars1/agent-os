@@ -1,6 +1,7 @@
 import { db, type Approval, type CalendarEvent, type Kind, type Owner, type Task, type TaskStatus } from './db'
 import { notify } from './discord'
 import { isValidRecur, nextDue } from './recur'
+import { sendAfterOf, sendableText, splitPost, waitUntil } from './send-gate'
 import { recordTouch } from './touches'
 
 const OPEN: TaskStatus[] = ['todo', 'doing', 'waiting_approval']
@@ -194,11 +195,13 @@ export const requestApproval = async (input: {
   channel: string
   recipient?: string
   draft: string
+  send_after?: string | null
 }): Promise<Approval> => {
   const ap = check(await db().from('approvals').insert(input).select('*').single()) as Approval
   if (input.task_id) await db().from('tasks').update({ status: 'waiting_approval' }).eq('id', input.task_id)
   // The decision card (✅/❌) goes to the bot DM via aos-watch; the channel only logs that a draft is queued.
-  await notify(`ℹ️ Approval #${ap.id} queued · ${ap.channel}${ap.recipient ? ` → ${ap.recipient}` : ''} · decide in the bot DM`)
+  const when = ap.send_after ? ` · goes out ${fmtIst(ap.send_after)}` : ''
+  await notify(`ℹ️ Approval #${ap.id} queued · ${ap.channel}${ap.recipient ? ` → ${ap.recipient}` : ''}${when} · decide in the bot DM`)
   return ap
 }
 
@@ -206,6 +209,40 @@ export const listApprovals = async (status: Approval['status'] = 'pending'): Pro
   check(
     await db().from('approvals').select('*').eq('status', status).is('deleted_at', null).order('id'),
   ) as Approval[]
+
+// What the runner's Claude is told for a SEND task. A LinkedIn post is posted live at its slot (never scheduled
+// inside LinkedIn, which would make the time and the "sent" check unverifiable), then the first comment goes under it.
+export const sendPrompt = (approval: Approval, at: Date | null): string => {
+  const to = approval.recipient ? ` to ${approval.recipient}` : ''
+  const timing = at
+    ? `Scheduled: do not send before ${fmtIst(at.toISOString())} IST. If it is earlier than that when you start, ` +
+      `send nothing, call task_update to set due_at to that time and status todo, and stop.\n\n`
+    : ''
+  const done =
+    `then call approval_mark_sent with id ${approval.id} and log_activity. ` +
+    `If it can't be sent, call approval_mark_sent with failed=true and the reason.`
+  if (approval.channel.toLowerCase() === 'linkedin-post') {
+    const body = sendableText(approval.draft)
+    const { post, comment } = splitPost(body)
+    const header = approval.draft.replace(body, '').replace(/^\s*POST\s*:\s*$/im, '').trim()
+    return (
+      `${timing}Approval #${approval.id} (a post for Ayush's own LinkedIn feed) was approved by Ayush. ` +
+      (header ? `Checks from the draft header (never post this part): ${header}\n\nIf a check fails, post nothing and call approval_mark_sent with failed=true and the reason.\n\n` : '') +
+      `First open Ayush's recent activity and check this post is not already live (never post twice). ` +
+      `Then publish it now as a normal post (not LinkedIn's own scheduler), with exactly this text, unchanged:\n\n` +
+      `${post}\n\n` +
+      (comment
+        ? `Once it is live, add exactly this as the first comment on it, from Ayush's account:\n\n${comment}\n\n`
+        : '') +
+      `Confirm the post shows once on the feed${comment ? ' with the comment under it' : ''} and note its URL, ${done}`
+    )
+  }
+  return (
+    `${timing}Approval #${approval.id} was approved by Ayush. Send exactly this text, unchanged, ` +
+    `via ${approval.channel}${to}:\n\n${approval.draft}\n\n` +
+    `Confirm it went out (check the sent view), ${done}`
+  )
+}
 
 // Approving queues an auto task for Claude to send exactly the approved text.
 export const decideApproval = async (
@@ -221,19 +258,18 @@ export const decideApproval = async (
   let sendTask: Task | null = null
   if (decision === 'approved') {
     const parent = approval.task_id ? await getTask(approval.task_id) : null
+    // A scheduled approval (send_after) gets its SEND task at that time, never now; the runner re-checks it too.
+    const at = waitUntil(sendAfterOf(approval), Date.now())
     sendTask = await addTask({
       title: `SEND APPROVED #${approval.id} (${approval.channel}${approval.recipient ? ` to ${approval.recipient}` : ''})`,
       venture: parent?.venture ?? 'general',
       owner: 'claude',
       kind: 'send',
-      due_at: new Date().toISOString(),
+      due_at: (at ?? new Date()).toISOString(),
       auto: true,
       cwd: parent?.cwd ?? null,
-      prompt:
-        `Approval #${approval.id} was approved by Ayush. Send exactly this text, unchanged, ` +
-        `via ${approval.channel}${approval.recipient ? ` to ${approval.recipient}` : ''}:\n\n${approval.draft}\n\n` +
-        `Confirm it went out (check the sent view), then call approval_mark_sent with id ${approval.id} ` +
-        `and log_activity. If it can't be sent, call approval_mark_sent with failed=true and the reason.`,
+      notes: at ? `scheduled: approval #${approval.id} may not go out before ${fmtIst(at.toISOString())} IST` : null,
+      prompt: sendPrompt(approval, at),
     })
   } else if (approval.task_id) {
     await db().from('tasks').update({ status: 'todo' }).eq('id', approval.task_id).eq('status', 'waiting_approval')

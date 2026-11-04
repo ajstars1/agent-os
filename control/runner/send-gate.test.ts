@@ -1,6 +1,6 @@
 // bun test runner/send-gate.test.ts  (lives in runner/ because bun:test types are outside the Next type-check)
 import { describe, expect, it } from 'bun:test'
-import { approvalIdFromTitle, checkSend, holdReason, recipientKeys, sendableText, touchReason } from '../lib/send-gate'
+import { approvalIdFromTitle, checkSend, holdReason, recipientKeys, sendAfterOf, sendableText, splitPost, touchReason, waitUntil } from '../lib/send-gate'
 import { checkBudget } from '../lib/run-budget'
 import { pickNext } from '../lib/task-priority'
 
@@ -127,5 +127,30 @@ describe('touchReason', () => {
   })
   it('no handle, no counter', () => {
     expect(touchReason([], 5)).toBeNull()
+  })
+})
+
+describe('scheduled sends', () => {
+  const NOW = Date.parse('2026-11-03T15:00:00Z')
+  it('waits only for a future send_after', () => {
+    expect(waitUntil(null, NOW)).toBeNull()
+    expect(waitUntil('2026-11-03T14:00:00Z', NOW)).toBeNull()
+    expect(waitUntil('not a date', NOW)).toBeNull()
+    expect(waitUntil('2026-11-05T09:30:00+05:30', NOW)?.toISOString()).toBe('2026-11-05T04:00:00.000Z')
+  })
+  it('splits a LinkedIn post from its first comment', () => {
+    const body = sendableText('Scheduled Thu. This header is not part of the post.\n\nPOST:\nLine one.\n\nLine two.\n\nFIRST COMMENT:\nhttps://github.com/x')
+    expect(splitPost(body)).toEqual({ post: 'Line one.\n\nLine two.', comment: 'https://github.com/x' })
+    expect(splitPost('Only a post.')).toEqual({ post: 'Only a post.', comment: null })
+  })
+})
+
+describe('sendAfterOf', () => {
+  it('prefers the column, else reads the draft header, never the body', () => {
+    const draft = 'Series post 1. This header is not part of the post.\nSend after: 2026-11-05T09:30:00+05:30\n\nPOST:\nHello.'
+    expect(sendAfterOf({ send_after: '2026-11-06T04:00:00Z', draft })).toBe('2026-11-06T04:00:00Z')
+    expect(sendAfterOf({ send_after: null, draft })).toBe('2026-11-05T09:30:00+05:30')
+    expect(sendAfterOf({ draft: 'POST:\nSend after: 2026-11-05T09:30:00+05:30' })).toBeNull()
+    expect(sendAfterOf({ draft: 'Plain DM' })).toBeNull()
   })
 })

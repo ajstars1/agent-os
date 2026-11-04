@@ -126,12 +126,15 @@ const handler = createMcpHandler((server) => {
       title: 'Request approval',
       description:
         'Queue an outbound message (LinkedIn DM, connection note, email, post, comment) for Ayush to approve on Discord. ' +
-        'Use this instead of sending. One call per message.',
+        'Use this instead of sending. One call per message. If it must go out at a set time (a post slot, an email day), ' +
+        'pass send_after: approving it then schedules the send for that time, never earlier. ' +
+        'For channel linkedin-post, put the post after a "POST:" line and the first-comment text (links) after a "FIRST COMMENT:" line.',
       inputSchema: z.object({
         task_id: z.number().int().optional(),
-        channel: z.string().max(60).describe('e.g. linkedin-dm, linkedin-note, gmail, zoho, reddit, indiehackers'),
+        channel: z.string().max(60).describe('e.g. linkedin-dm, linkedin-note, linkedin-post, gmail, zoho, reddit, indiehackers'),
         recipient: z.string().max(200).optional(),
         draft: z.string().min(1).max(5000),
+        send_after: ISO.optional().describe('Earliest send time; the approved send waits until then'),
       }),
     },
     safe(async (a) => ok(await requestApproval(a))),

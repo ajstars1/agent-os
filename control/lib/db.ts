@@ -35,6 +35,7 @@ export interface Approval {
   result: string | null
   created_at: string
   decided_at: string | null
+  send_after: string | null
 }
 
 export interface CalendarEvent {

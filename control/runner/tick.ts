@@ -12,9 +12,9 @@ import { join } from 'node:path'
 import { db, type Task } from '../lib/db'
 import { notify } from '../lib/discord'
 import { blockedUntil, fmtTime, parseLimit, readLimit, UNKNOWN_RETRY_MS, writeLimit } from '../lib/claude-limit'
-import { closeTask, fmtIst, getTask } from '../lib/tasks'
+import { closeTask, fmtIst, getTask, sendPrompt } from '../lib/tasks'
 import { budgetLimits, checkBudget, WINDOW_MS, type RecentRun } from '../lib/run-budget'
-import { approvalIdFromTitle, checkSend, holdReason, recipientKeys, touchReason } from '../lib/send-gate'
+import { approvalIdFromTitle, checkSend, holdReason, recipientKeys, sendAfterOf, touchReason, waitUntil } from '../lib/send-gate'
 import { priorTouches, recordTouch } from '../lib/touches'
 import { pickNext } from '../lib/task-priority'
 import { decideOutcome, parseRunResult } from '../lib/run-result'
@@ -223,6 +223,13 @@ const runOne = async (): Promise<void> => {
       await blockSend(next, approval, [`approval #${approvalId} is ${approval.status}, not approved`])
       return
     }
+    // Scheduled send: too early, so move the task to its time without spawning (no tokens, never early).
+    const wait = waitUntil(sendAfterOf(approval), now().getTime())
+    if (wait) {
+      const upd = await db().from('tasks').update({ due_at: wait.toISOString() }).eq('id', next.id).eq('status', 'todo')
+      if (upd.error) throw new Error(upd.error.message)
+      return
+    }
   }
 
   // Health preflight: browser and needed logins up, or skip without spawning (no tokens).
@@ -256,7 +263,10 @@ const runOne = async (): Promise<void> => {
     await db().from('tasks').update({ status: 'todo' }).eq('id', next.id).eq('status', 'doing')
     throw new Error(`run insert for #${next.id}: ${run.error?.message ?? 'no id returned'}`)
   }
-  const { code, out, timedOut } = await runClaude(next, mcpConfig)
+  // A post's SEND task may come from an older decide path: rebuild its prompt so the post and first comment
+  // are split and the header is never posted.
+  const task = approval?.channel.toLowerCase() === 'linkedin-post' ? { ...next, prompt: sendPrompt(approval, null) } : next
+  const { code, out, timedOut } = await runClaude(task, mcpConfig)
   // a run stopped by --max-turns or --max-budget-usd is a failure, not a quiet success
   const ok = code === 0 && !out.is_error && !timedOut && !(out.subtype ?? '').startsWith('error')
   const summary = (out.result ?? (out.subtype ? `stopped: ${out.subtype}` : '')).trim().slice(0, 3000)

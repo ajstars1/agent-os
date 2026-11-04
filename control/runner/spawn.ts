@@ -30,11 +30,13 @@ export const capKind = (task: Pick<Task, 'title' | 'kind'>): CapKind =>
 // Sonnet unless the task prompt itself asks for Opus.
 export const capsFor = (task: Pick<Task, 'title' | 'kind' | 'prompt'>): Caps => {
   const kind = capKind(task)
+  // A feed post is a bigger send: re-checks from the draft header, the post, the first comment, then verify.
+  const post = kind === 'send' && /^SEND APPROVED #\d+ \(linkedin-post\b/i.test(task.title)
   return {
     kind,
     model: /\bopus\b/i.test(task.prompt ?? '') ? 'opus' : 'sonnet',
-    maxTurns: TURNS[kind],
-    maxUsd: USD[kind],
+    maxTurns: post ? 30 : TURNS[kind],
+    maxUsd: post ? 2 : USD[kind],
   }
 }
 

@@ -17,6 +17,7 @@ describe('capsFor', () => {
     expect(capsFor(task())).toMatchObject({ kind: 'task', maxTurns: 60, model: 'sonnet' })
     expect(capsFor(task({ kind: 'check' }))).toMatchObject({ kind: 'check', maxTurns: 25 })
     expect(capsFor(task({ title: 'SEND APPROVED #38 (linkedin-connect to X)' }))).toMatchObject({ kind: 'send', maxTurns: 15 })
+    expect(capsFor(task({ title: "SEND APPROVED #54 (linkedin-post to Ayush's LinkedIn feed)" }))).toMatchObject({ kind: 'send', maxTurns: 30, maxUsd: 2 })
   })
   test('opus only when the prompt asks for it', () => {
     expect(capsFor(task({ prompt: 'Use Opus for this design doc.' })).model).toBe('opus')

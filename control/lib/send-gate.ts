@@ -29,6 +29,7 @@ const MAX_CHARS: Record<string, number> = {
   'linkedin-dm': 1500,
   'linkedin-connect': 300,
   'linkedin-comment': 1250,
+  'linkedin-post': 3000,
   indiehackers: 2000,
   reddit: 6000,
   gmail: 3000,
@@ -74,6 +75,31 @@ export const checkSend = (channel: string, recipient: string | null, draft: stri
   if (ch === 'reddit' && !/\br\/\w+|\bu\/\w+|reddit\.com\//i.test(to)) reasons.push('reddit recipient names no subreddit or user')
 
   return { ok: reasons.length === 0, reasons: [...new Set(reasons)] }
+}
+
+// Scheduled sends: an approval with send_after in the future must not go out before it. Returns that time
+// when the send has to wait, else null (no schedule, or the time has come).
+export const waitUntil = (sendAfter: string | null | undefined, nowMs: number): Date | null => {
+  if (!sendAfter) return null
+  const t = new Date(sendAfter)
+  return Number.isNaN(t.getTime()) || t.getTime() <= nowMs ? null : t
+}
+
+// The send time, from the approval's send_after column or, until that is set everywhere, a header line in the
+// draft ("Send after: 2026-11-05T09:30:00+05:30"). The header is outside the sendable body.
+const SEND_AFTER_LINE = /^\s*send after\s*:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2}))\s*$/im
+
+export const sendAfterOf = (approval: { send_after?: string | null; draft: string }): string | null => {
+  if (approval.send_after) return approval.send_after
+  const header = approval.draft.replace(sendableText(approval.draft), '')
+  return SEND_AFTER_LINE.exec(header)?.[1] ?? null
+}
+
+// A LinkedIn post draft holds the post and, after a "FIRST COMMENT:" line, the comment with the links.
+export const splitPost = (body: string): { post: string; comment: string | null } => {
+  const m = /^\s*FIRST COMMENT\s*:\s*$/im.exec(body)
+  if (!m) return { post: body.trim(), comment: null }
+  return { post: body.slice(0, m.index).trim(), comment: body.slice(m.index + m[0].length).trim() || null }
 }
 
 // "SEND APPROVED #24 (gmail to ...)" → 24
