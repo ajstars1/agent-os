@@ -17,7 +17,7 @@ import { budgetLimits, checkBudget, WINDOW_MS, type RecentRun } from '../lib/run
 import { approvalIdFromTitle, checkSend, holdReason, recipientKeys, sendAfterOf, touchReason, waitUntil } from '../lib/send-gate'
 import { priorTouches, recordTouch } from '../lib/touches'
 import { pickNext } from '../lib/task-priority'
-import { decideOutcome, parseRunResult } from '../lib/run-result'
+import { decideOutcome, isStalled, parseRunResult, STALL_LIMIT } from '../lib/run-result'
 import { decideBlock, needsOf, preflight } from './preflight'
 import { buildArgs, childEnv, writeMcpConfig } from './spawn'
 import type { Approval } from '../lib/db'
@@ -170,6 +170,31 @@ const recordBlock = async (task: Task, reason: string): Promise<void> => {
     .eq('id', task.id)
   if (upd.error) throw new Error(upd.error.message)
   await notify(`🩺 Paused #${task.id} ${task.title}: ${reason.replace(/^preflight: /, '')} (twice). Fix it, then turn auto back on for #${task.id}.`)
+}
+
+// Stall rule (lib/run-result.ts): after a run without a result, look at the task's recent runs. If the last
+// STALL_LIMIT spawned runs all ended that way, take the task off auto so it stops costing money. Returns true
+// when it paused the task (only a task still in todo and on auto: one Claude closed or parked is left alone).
+const pauseIfStalled = async (taskId: number): Promise<boolean> => {
+  const recent = await db()
+    .from('runs')
+    .select('status, summary')
+    .eq('task_id', taskId)
+    .order('started_at', { ascending: false })
+    .limit(STALL_LIMIT * 4)
+  if (recent.error) throw new Error(`stall check #${taskId}: ${recent.error.message}`)
+  if (!isStalled((recent.data ?? []) as { status: string; summary: string | null }[])) return false
+  const fresh = await getTask(taskId)
+  if (fresh.status !== 'todo' || !fresh.auto) return false
+  const note = `${STALL_LIMIT} runs in a row without a result: auto paused ${fmtIst(now().toISOString())}`
+  const upd = await db()
+    .from('tasks')
+    .update({ auto: false, notes: [fresh.notes, note].filter(Boolean).join('\n') })
+    .eq('id', taskId)
+    .eq('status', 'todo')
+    .select('id')
+  if (upd.error) throw new Error(`stall pause #${taskId}: ${upd.error.message}`)
+  return (upd.data?.length ?? 0) > 0
 }
 
 const runOne = async (): Promise<void> => {
@@ -328,7 +353,16 @@ const runOne = async (): Promise<void> => {
       })
       .eq('id', next.id)
       .eq('status', 'doing')
+  } else if (outcome.task.kind === 'defer') {
+    // Claude put the task back to todo itself; push its due time so the next tick does not run it again.
+    // Only ever later: a time Claude set further out stays.
+    const retryAt = new Date(now().getTime() + outcome.task.retryMs).toISOString()
+    const upd = await db().from('tasks').update({ due_at: retryAt }).eq('id', next.id).eq('status', 'todo').lt('due_at', retryAt)
+    if (upd.error) throw new Error(`defer #${next.id}: ${upd.error.message}`)
   }
+
+  // Stall rule: three spawned runs in a row without a result pause the task, whatever the reason.
+  const paused = outcome.run === 'ok' ? false : await pauseIfStalled(next.id)
 
   // Count the touch here too (the MCP's approval_mark_sent also does once deployed; both are idempotent).
   if (approval) {
@@ -338,6 +372,12 @@ const runOne = async (): Promise<void> => {
 
   const icon = { ok: '✅', timeout: '⏱️', error: '⚠️', unverified: '❔', blocked: '🚧' }[outcome.run]
   await notify(`${icon} **#${next.id} ${next.title}** (run ${runId ?? '?'})\n${summary || '(no output)'}`)
+  if (paused) {
+    await notify(
+      `⏸️ Paused #${next.id} ${next.title}: ${STALL_LIMIT} runs in a row ended without a result. ` +
+        `Change the task or its brief, then turn auto back on for #${next.id}.`,
+    )
+  }
 }
 
 const checkHomeIp = async (): Promise<void> => {

@@ -42,7 +42,8 @@ export const capsFor = (task: Pick<Task, 'title' | 'kind' | 'prompt'>): Caps => 
 
 const RESULT_RULE = `The very last line of your reply must be exactly one result line, JSON on one line:
 AOS_RESULT {"status":"done","summary":"<one line>"}
-status is "done" only if the task's goal was met, "blocked" if you could not proceed (login, CAPTCHA, missing input), "failed" otherwise. Without this line (or task_done) the run counts as unverified and the task is retried.`
+status is "done" only if the task's goal was met, "blocked" if you could not proceed (login, CAPTCHA, missing input), "failed" otherwise. Without this line (or task_done) the run counts as unverified and the task is retried.
+A check that ran properly and found nothing to act on (no new replies, no post that fits the brief) is "done", not "blocked": say what you checked in the summary and call task_done. "blocked" means something stopped you from doing the work, and three runs in a row without a result pause the task.`
 
 const BROWSER_RULE = `Browser: Claude in Chrome, in a new tab you close when done. "Disconnected" means Chrome is closed: run \`bash ~/Developer/Ayush/agent-os/control/hooks/ensure-chrome.sh\`, then retry twice. For sites the extension can't use (reddit.com), pilot-browser with mode "managed", profile "aos" works unattended; never mode "attach" here (it needs a person to click Allow). A site not logged in there: skip and say so.`
 

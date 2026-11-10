@@ -32,9 +32,12 @@ export const parseRunResult = (text: string | null | undefined): RunResult | nul
 export type RunStatus = 'ok' | 'error' | 'timeout' | 'unverified' | 'blocked'
 
 export type TaskAction =
-  | { kind: 'leave' } // Claude already settled the task (task_done, or task_update away from doing)
+  | { kind: 'leave' } // Claude already settled the task (task_done, or task_update to waiting_approval)
   | { kind: 'done'; note: string }
   | { kind: 'todo'; note: string; retryMs: number }
+  // Claude put the task back to todo itself. Its due time is still in the past, so without a push the very
+  // next tick would run it again (task #114 ran 48 times this way on 3-4 Nov). Never moves a due time earlier.
+  | { kind: 'defer'; retryMs: number }
 
 export interface Outcome {
   run: RunStatus
@@ -55,39 +58,67 @@ export const decideOutcome = (input: {
   const { exitOk, timedOut, statusAfter, result, runId } = input
   const runRef = `run ${runId ?? '?'}`
   const claudeSettled = statusAfter !== 'doing'
+  // What to do when Claude changed the task's status itself: a task it left in todo is still due, so push it.
+  const settled: TaskAction = statusAfter === 'todo' ? { kind: 'defer', retryMs: RETRY_MS } : { kind: 'leave' }
 
   if (timedOut) {
     return {
       run: 'timeout',
-      task: claudeSettled ? { kind: 'leave' } : { kind: 'todo', note: `${runRef} timed out, retry in 1 h`, retryMs: RETRY_MS },
+      task: claudeSettled ? settled : { kind: 'todo', note: `${runRef} timed out, retry in 1 h`, retryMs: RETRY_MS },
     }
   }
   if (!exitOk) {
     return {
       run: 'error',
-      task: claudeSettled ? { kind: 'leave' } : { kind: 'todo', note: `${runRef} failed, retry in 1 h`, retryMs: RETRY_MS },
+      task: claudeSettled ? settled : { kind: 'todo', note: `${runRef} failed, retry in 1 h`, retryMs: RETRY_MS },
     }
   }
   if (statusAfter === 'done' || statusAfter === 'skipped') return { run: 'ok', task: { kind: 'leave' } }
   if (result?.status === 'blocked') {
     return {
       run: 'blocked',
-      task: claudeSettled ? { kind: 'leave' } : { kind: 'todo', note: `${runRef} blocked: ${result.summary}`, retryMs: RETRY_MS },
+      task: claudeSettled ? settled : { kind: 'todo', note: `${runRef} blocked: ${result.summary}`, retryMs: RETRY_MS },
     }
   }
   if (result?.status === 'failed') {
     return {
       run: 'error',
-      task: claudeSettled ? { kind: 'leave' } : { kind: 'todo', note: `${runRef} failed: ${result.summary}`, retryMs: RETRY_MS },
+      task: claudeSettled ? settled : { kind: 'todo', note: `${runRef} failed: ${result.summary}`, retryMs: RETRY_MS },
     }
   }
   if (result?.status === 'done') {
-    return { run: 'ok', task: claudeSettled ? { kind: 'leave' } : { kind: 'done', note: `runner: ${result.summary}` } }
+    return { run: 'ok', task: claudeSettled ? settled : { kind: 'done', note: `runner: ${result.summary}` } }
   }
   // Claude moved the task itself: back to todo means it was blocked; waiting_approval means a draft is queued.
-  if (claudeSettled) return { run: statusAfter === 'todo' ? 'blocked' : 'ok', task: { kind: 'leave' } }
+  if (claudeSettled) return { run: statusAfter === 'todo' ? 'blocked' : 'ok', task: settled }
   return {
     run: 'unverified',
     task: { kind: 'todo', note: `unverified: ${runRef} exited 0 without task_done or an ${RESULT_TAG} line, retry in 1 h`, retryMs: RETRY_MS },
   }
 }
+
+// Stall rule (plan v2 §2.2): a task whose last STALL_LIMIT spawned runs all ended without a result is paused
+// and handed to Ayush, whatever the reason. The preflight's own "two identical blocks" rule only covers runs
+// that never spawned.
+export const STALL_LIMIT = 3
+
+const NO_RESULT: ReadonlySet<string> = new Set(['blocked', 'error', 'timeout', 'unverified'])
+
+// A run cut short by Claude's usage limit says nothing about the task.
+const isUsageLimit = (r: { status: string; summary: string | null }): boolean =>
+  r.status === 'error' && (r.summary ?? '').startsWith('usage limit')
+
+// rows: the task's runs, newest first. Counts the unbroken streak of runs with no result. Preflight skips
+// (no spawn) and usage-limit stops neither count nor break the streak; an ok run ends it.
+export const stallStreak = (rows: ReadonlyArray<{ status: string; summary: string | null }>): number => {
+  let streak = 0
+  for (const r of rows) {
+    if (r.status === 'skipped' || r.status === 'running' || isUsageLimit(r)) continue
+    if (!NO_RESULT.has(r.status)) break
+    streak++
+  }
+  return streak
+}
+
+export const isStalled = (rows: ReadonlyArray<{ status: string; summary: string | null }>): boolean =>
+  stallStreak(rows) >= STALL_LIMIT
