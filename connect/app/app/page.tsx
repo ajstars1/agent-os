@@ -1,11 +1,12 @@
 import { redirect } from 'next/navigation'
 import { goalPace } from '../../lib/agenda'
-import { listApprovals, loadAgenda } from '../../lib/store'
+import { channelEnv } from '../../lib/env'
+import { listApprovals, loadAgenda, phoneLink, type PhoneLink } from '../../lib/store'
 import { signedIn, siteOrigin } from '../../lib/supabase-server'
 import { fmtDay, fmtWhen } from '../../lib/time'
 import type { Approval, Goal, Task } from '../../lib/types'
 import { ConnectSteps } from './_ui/connect-steps'
-import { decideDraft, disconnectApp, saveTimeZone } from './actions'
+import { connectTelegram, decideDraft, disconnectApp, disconnectPhone, saveTimeZone } from './actions'
 
 export const metadata = { title: 'aos · today', robots: { index: false, follow: false } }
 export const dynamic = 'force-dynamic'
@@ -16,6 +17,7 @@ const MESSAGES: Record<string, string> = {
   disconnect: 'Could not disconnect that app. Try again.',
   zone: 'That time zone is not known. Use a name like Asia/Kolkata or Europe/London.',
   connect: 'The connection request did not work. Start again from your AI app.',
+  phone: 'Could not connect or disconnect your phone. Try again in a minute.',
 }
 
 const Section = ({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) => (
@@ -105,7 +107,8 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string }>
   if (!user) redirect('/login?next=/app')
 
   const now = new Date()
-  const [{ agenda, tz }, approved, grants, origin] = await Promise.all([
+  const phoneOn = channelEnv().botUsername !== null
+  const [{ agenda, tz }, approved, grants, origin, phone] = await Promise.all([
     loadAgenda(user.sb, 1, now),
     listApprovals(user.sb, 'approved'),
     user.sb.auth.oauth.listGrants().then(
@@ -113,6 +116,7 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string }>
       () => [],
     ),
     siteOrigin(),
+    phoneOn ? phoneLink(user.sb).catch((): PhoneLink | null => null) : Promise.resolve(null),
   ])
   const message = e ? MESSAGES[e] : undefined
   const due = [...agenda.overdue, ...agenda.today]
@@ -226,6 +230,36 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string }>
               <ConnectSteps url={`${origin}/api/mcp`} />
             </div>
           </details>
+        </Section>
+      ) : null}
+
+      {phoneOn ? (
+        <Section title="Your phone">
+          {phone ? (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-raised p-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm">Telegram{phone.label ? ` · ${phone.label}` : ''}</p>
+                <p className="text-xs text-faint">New drafts arrive there with Approve and Reject. Send /today for your day.</p>
+              </div>
+              <form action={disconnectPhone}>
+                <button type="submit" className="rounded-lg border border-line px-3 py-1.5 text-sm active:bg-lift">
+                  Unlink
+                </button>
+              </form>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-line bg-raised p-4">
+              <p className="text-sm text-dim">
+                Get each draft on your phone and approve it with one tap, even when you are away from your assistant.
+              </p>
+              <form action={connectTelegram} className="mt-3">
+                <button type="submit" className="w-full rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-ground active:opacity-80">
+                  Connect Telegram
+                </button>
+              </form>
+              <p className="mt-2 text-xs text-faint">Opens Telegram. Press Start there and you are done. The link works once, for 15 minutes.</p>
+            </div>
+          )}
         </Section>
       ) : null}
 

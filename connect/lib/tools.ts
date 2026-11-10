@@ -25,6 +25,7 @@ import {
   updateTask,
   withinRate,
 } from './store'
+import { notifyDraft } from './notify'
 import { userClient } from './supabase'
 
 // Calls per user per minute, across all tools.
@@ -167,7 +168,8 @@ export const registerTools = (server: McpServer): void => {
       description:
         'Before you send, post or publish ANYTHING on the person\'s behalf (email, message, comment, post), put the exact ' +
         'text here instead of sending it. One call per message. The person approves or rejects it on the aos site; you ' +
-        'cannot approve it yourself. Then tell them a draft is waiting.',
+        'cannot approve it yourself. Then tell them a draft is waiting (phone_pinged = true means their phone already got it ' +
+        'with Approve and Reject buttons).',
       inputSchema: z.object({
         channel: z.string().regex(/^[a-z0-9_-]{1,60}$/).describe('Where it would go, e.g. email, whatsapp, linkedin-post, sms'),
         recipient: z.string().max(200).optional().describe('Who it goes to (name, address or handle)'),
@@ -177,7 +179,10 @@ export const registerTools = (server: McpServer): void => {
       }),
       annotations: WRITE,
     },
-    run(async (sb, a: { channel: string; draft: string; recipient?: string; task_id?: number; send_after?: string }) => requestApproval(sb, a)),
+    run(async (sb, a: { channel: string; draft: string; recipient?: string; task_id?: number; send_after?: string }) => {
+      const approval = await requestApproval(sb, a)
+      return { ...approval, phone_pinged: await notifyDraft(sb, approval) }
+    }),
   )
 
   server.registerTool(

@@ -35,14 +35,17 @@ Every user, and every app they connect, holds a real Supabase token and could ca
 | Nothing is hard-deleted | No delete policy, delete privilege revoked; `deleted_at` only |
 | One user cannot fill the database | Row quotas per table, size checks on every text column |
 | Rate limit (120 tool calls a minute per user) | `hit_rate()`; users cannot read or reset the counter |
+| Only the person can link a phone | `create_link_code()` refuses tokens with a `client_id`; codes are one-time, 15 minutes, stored hashed |
+| A phone decides only its own person's drafts | `channel_*` functions run only with the server secret key and scope every query to the linked user; 60 messages a minute |
 
-The app has no service-role key at all. The MCP endpoint accepts only tokens issued to a connected app; the person's own website session never passes through an assistant.
+The MCP endpoint and the site never use a privileged key: every query runs with the caller's own token. The one exception is the Telegram webhook (`lib/channel-db.ts`), which holds the Supabase secret key and can call exactly three database functions (`channel_claim`, `channel_snapshot`, `channel_decide`). Each finds the user from the linked chat and touches only that user's rows. The MCP endpoint accepts only tokens issued to a connected app; the person's own website session never passes through an assistant.
 
 ## Tests
 
-`bun test` (45 tests):
+`bun test` (63 tests):
 
 - `tests/db.test.ts` runs the real migration on an in-process Postgres (PGlite) and attacks it as a second user and as a connected app. It also checks that every column and database function the code names exists in the schema.
+- `tests/bot.test.ts` covers the Telegram bot: commands, yes/no, buttons, the webhook secret check, unlinked chats, group chats ignored, and that only our own error messages reach the chat.
 - `tests/lib.test.ts` covers time zones (including daylight-saving days), repeating tasks, the agenda, goal pace, the redirect guard and the tool wrapper.
 
 Checked by hand on a local build with placeholder settings: the landing page, the OAuth metadata document, `401` with the discovery header for no token, a garbage token and a forged unsigned token, and the redirects to sign-in.
@@ -67,6 +70,26 @@ Checked live: the landing page, `401` with the discovery header, the protected-r
 
 **Still to try by a person:** sign in with Google, add the connector link in Claude (Settings → Connectors → Add custom connector), press Allow, and ask "what is on my aos agenda today?".
 
+## Phone (Telegram)
+
+The person presses **Connect Telegram** on `/app`, Telegram opens, they press Start, and the chat is linked. From then on:
+
+- every draft their assistant queues arrives in that chat with **Approve** and **Reject** buttons;
+- `/today` shows what is due, drafts waiting and goals; `/drafts` lists drafts with buttons; `yes 12` / `no 12` also work.
+
+Approving on the phone only marks the draft approved. The assistant still sends it, the next time it checks its drafts.
+
+Telegram rather than WhatsApp or Discord for the first channel: free, no business verification, works entirely by webhook on Vercel, and the bot can message anyone who pressed Start. WhatsApp (Meta verification, paid conversations) and Discord (a bot can only DM people it shares a server with) can be added behind the same `channel_*` functions.
+
+Setup:
+
+1. In Telegram, message @BotFather, send `/newbot`, pick a name and a username ending in `bot`.
+2. Paste the token after `TELEGRAM_BOT_TOKEN=` in `.env.local` (never in a chat). `TELEGRAM_WEBHOOK_SECRET` is already there and matches Vercel.
+3. `bun scripts/telegram-setup.ts https://aos-connect.vercel.app` sets the webhook and command menu and prints the bot username.
+4. Add `TELEGRAM_BOT_TOKEN` and `NEXT_PUBLIC_TELEGRAM_BOT` (the username) to Vercel and redeploy. `SUPABASE_SECRET_KEY` and `TELEGRAM_WEBHOOK_SECRET` are already set.
+
+Until the token is set, `/api/telegram` answers 503 and `/app` hides the Connect Telegram button.
+
 ## Run locally
 
 `cp .env.example .env.local`, fill it in, then `npm run dev`. `npm run build` works without the variables; requests then answer that the server is not configured.
@@ -74,5 +97,5 @@ Checked live: the landing page, `401` with the discovery header, the protected-r
 ## Not in this first cut
 
 - Email sign-in (Google only for now).
-- Any always-on runner: the assistant acts only while the person is talking to it. Hosted automations are step 2.
+- Any always-on runner: the assistant acts only while the person is talking to it, so an approved draft waits until then. Hosted automations are step 2.
 - A limit on how many messages one recipient gets (the personal aos has this; port it with the first hosted automation).

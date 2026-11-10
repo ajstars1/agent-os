@@ -36,3 +36,21 @@ export const env = (): Env => {
 
 // Supabase Auth is the OAuth authorization server; this is its issuer.
 export const authIssuer = (): string => `${env().supabaseUrl}/auth/v1`
+
+// Server-only settings for the phone channel. Each is optional: without them the bot is simply off.
+export interface ChannelEnv {
+  // Supabase secret key (sb_secret_...). Used only to call the channel_* database functions; see lib/channel-db.ts.
+  secretKey: string | null
+  botToken: string | null
+  webhookSecret: string | null
+  botUsername: string | null
+}
+
+const pick = (value: string | undefined, pattern: RegExp): string | null => (value && pattern.test(value) ? value : null)
+
+export const channelEnv = (): ChannelEnv => ({
+  secretKey: pick(process.env.SUPABASE_SECRET_KEY, /^\S{20,}$/),
+  botToken: pick(process.env.TELEGRAM_BOT_TOKEN, /^\d{5,15}:[A-Za-z0-9_-]{30,}$/),
+  webhookSecret: pick(process.env.TELEGRAM_WEBHOOK_SECRET, /^[A-Za-z0-9_-]{32,256}$/),
+  botUsername: pick(process.env.NEXT_PUBLIC_TELEGRAM_BOT, /^[A-Za-z0-9_]{5,32}$/),
+})

@@ -255,6 +255,32 @@ export const loadAgenda = async (
   return { agenda: buildAgenda({ tasks, approvals, goals, events: check(events) as unknown as CalendarEvent[] }, w), tz }
 }
 
+// ---- phone channel ----------------------------------------------------------------------------------------
+
+export interface PhoneLink {
+  label: string | null
+  created_at: string
+}
+
+export const phoneLink = async (sb: SupabaseClient): Promise<PhoneLink | null> => {
+  const { data, error } = await sb.from('channel_links').select('label,created_at').eq('channel', 'telegram').is('deleted_at', null).maybeSingle()
+  if (error) throw new Error(error.message)
+  return (data as PhoneLink | null) ?? null
+}
+
+// A one-time code for t.me/<bot>?start=<code>. The database refuses it for a connected app's token.
+export const createLinkCode = async (sb: SupabaseClient): Promise<string> => {
+  const { data, error } = await sb.rpc('create_link_code', { p_channel: 'telegram' })
+  if (error) throw new Error(error.message)
+  if (typeof data !== 'string' || !/^[0-9a-f]{64}$/.test(data)) throw new Error('No link code returned')
+  return data
+}
+
+export const unlinkPhone = async (sb: SupabaseClient): Promise<void> => {
+  const { error } = await sb.from('channel_links').update({ deleted_at: new Date().toISOString() }).eq('channel', 'telegram').is('deleted_at', null)
+  if (error) throw new Error(error.message)
+}
+
 // ---- rate limit -------------------------------------------------------------------------------------------
 
 // Counts one request for the caller. False means over the limit for this window.

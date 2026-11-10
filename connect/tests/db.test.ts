@@ -36,7 +36,7 @@ type Row = Record<string, unknown>
 interface Who {
   sub?: string
   clientId?: string
-  role?: 'authenticated' | 'anon'
+  role?: 'authenticated' | 'anon' | 'service_role'
 }
 
 // Run one statement as a given token would: the API sets the role and the claims, then runs the query.
@@ -241,6 +241,81 @@ describe('limits', () => {
 
 // The data library talks to the database by name. A renamed column or function argument would only show up in
 // production, so check every name the code uses against the real schema.
+describe('the phone channel', () => {
+  // the bot's webhook, calling with the server's secret key
+  const server: Who = { role: 'service_role' }
+  const CHAT = '700100'
+  let code = ''
+
+  const snapshot = async (chat: string): Promise<Record<string, unknown> | null> =>
+    (await as(server, `select channel_snapshot('telegram', $1, now() - interval '1 day', now() + interval '1 day') as s`, [chat]))[0]
+      .s as Record<string, unknown> | null
+
+  test('only the person, signed in on the site, can make a link code', async () => {
+    await fails(as(aliceApp, `select create_link_code('telegram')`), /assistant cannot/)
+    await fails(as({ role: 'anon' }, `select create_link_code('telegram')`), /permission denied/)
+    await fails(as(alice, `select create_link_code('sms')`), /Unknown channel/)
+    code = String((await as(alice, `select create_link_code('telegram') as c`))[0].c)
+    expect(code).toMatch(/^[0-9a-f]{64}$/)
+    await fails(as(alice, 'select * from link_codes'), /permission denied/)
+  })
+
+  test('users and apps cannot call the bot functions', async () => {
+    await fails(as(bob, `select channel_claim('telegram', $1, '999', null)`, [code]), /permission denied/)
+    await fails(as(aliceApp, `select channel_decide('telegram', $1, 1, 'approved')`, [CHAT]), /permission denied/)
+    await fails(as(alice, `select channel_snapshot('telegram', $1, now(), now())`, [CHAT]), /permission denied/)
+    await fails(as(server, `select channel_user('telegram', $1)`, [CHAT]), /permission denied/)
+  })
+
+  test('a code links one chat, once', async () => {
+    expect(await snapshot(CHAT)).toBeNull()
+    expect((await as(server, `select channel_claim('telegram', 'nope', $1, null) as ok`, [CHAT]))[0].ok).toBe(false)
+    expect((await as(server, `select channel_claim('telegram', $1, $2, 'Alice') as ok`, [code, CHAT]))[0].ok).toBe(true)
+    expect((await as(server, `select channel_claim('telegram', $1, '700999', null) as ok`, [code]))[0].ok).toBe(false)
+    expect((await as(alice, `select channel, label from channel_links where deleted_at is null`))).toEqual([{ channel: 'telegram', label: 'Alice' }])
+    expect(await as(bob, 'select id from channel_links')).toEqual([])
+    expect(await as(bob, 'select external_id from channel_links')).toEqual([])
+  })
+
+  test('the linked chat sees only its own person', async () => {
+    const snap = await snapshot(CHAT)
+    const tasks = snap?.tasks as Array<Record<string, unknown>>
+    expect(tasks.length).toBeGreaterThan(0)
+    for (const t of tasks) expect(t.user_id).toBeUndefined()
+    const bobTitles = (await as(bob, 'select title from tasks')).map((r) => r.title)
+    for (const t of tasks) expect(bobTitles).not.toContain(t.title)
+  })
+
+  test('yes from the linked chat decides that person\'s draft, and nobody else\'s', async () => {
+    const [mine] = await as(aliceApp, `select (request_approval('email', 'Hi from the phone test')).id as id`)
+    const [theirs] = await as(bob, `select (request_approval('email', 'Bob draft')).id as id`)
+    const decided = (await as(server, `select channel_decide('telegram', $1, $2, 'approved') as a`, [CHAT, mine.id]))[0].a as Record<string, unknown>
+    expect(decided.status).toBe('approved')
+    expect(decided.user_id).toBeUndefined()
+    await fails(as(server, `select channel_decide('telegram', $1, $2, 'approved')`, [CHAT, mine.id]), /already decided/)
+    await fails(as(server, `select channel_decide('telegram', $1, $2, 'approved')`, [CHAT, theirs.id]), /not found/)
+    await fails(as(server, `select channel_decide('telegram', '123', $1, 'approved')`, [theirs.id]), /not linked/)
+    expect((await as(bob, 'select status from approvals where id = $1', [theirs.id]))[0].status).toBe('pending')
+  })
+
+  test('the person can unlink but not relink by hand', async () => {
+    await fails(as(alice, `update channel_links set label = 'x'`), /permission denied/)
+    await as(alice, 'update channel_links set deleted_at = now() where deleted_at is null')
+    expect(await snapshot(CHAT)).toBeNull()
+    const relinked = await as(alice, 'update channel_links set deleted_at = null returning id')
+    expect(relinked).toEqual([])
+  })
+
+  test('linking the same chat to a new person moves it', async () => {
+    const aliceCode = String((await as(alice, `select create_link_code('telegram') as c`))[0].c)
+    const bobCode = String((await as(bob, `select create_link_code('telegram') as c`))[0].c)
+    await as(server, `select channel_claim('telegram', $1, $2, null)`, [aliceCode, CHAT])
+    await as(server, `select channel_claim('telegram', $1, $2, null)`, [bobCode, CHAT])
+    expect(await as(alice, 'select id from channel_links where deleted_at is null')).toEqual([])
+    expect((await as(bob, 'select id from channel_links where deleted_at is null')).length).toBe(1)
+  })
+})
+
 describe('code and schema agree', () => {
   test('every column the code selects exists', async () => {
     const lists: Record<string, string> = { tasks: TASK_COLS, approvals: APPROVAL_COLS, goals: GOAL_COLS, events: EVENT_COLS, activity: ACTIVITY_COLS }
@@ -253,9 +328,9 @@ describe('code and schema agree', () => {
   })
 
   test('every database function the code calls exists with those argument names', async () => {
-    const src = readFileSync(join(import.meta.dir, '..', 'lib', 'store.ts'), 'utf8')
+    const src = ['store.ts', 'channel-db.ts'].map((f) => readFileSync(join(import.meta.dir, '..', 'lib', f), 'utf8')).join('\n')
     const calls = [...src.matchAll(/\.rpc\('([a-z_]+)',\s*\{([^}]*)\}/g)]
-    expect(calls.length).toBeGreaterThanOrEqual(6)
+    expect(calls.length).toBeGreaterThanOrEqual(9)
     for (const [, name, body] of calls) {
       const used = [...body.matchAll(/(p_[a-z_]+):/g)].map((m) => m[1])
       const fn = (await pg.query<{ args: string[] }>(
@@ -270,7 +345,7 @@ describe('code and schema agree', () => {
     const tables = (await pg.query<{ relname: string; relrowsecurity: boolean }>(
       `select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r'`,
     )).rows
-    expect(tables.length).toBe(8)
+    expect(tables.length).toBe(10)
     for (const t of tables) expect(t.relrowsecurity, t.relname).toBe(true)
     const deletes = (await pg.query(`select 1 from pg_policies where schemaname = 'public' and cmd in ('DELETE', 'ALL')`)).rows
     expect(deletes).toEqual([])

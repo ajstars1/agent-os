@@ -3,7 +3,8 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
-import { decideApproval, setProfile } from '../../lib/store'
+import { channelEnv } from '../../lib/env'
+import { createLinkCode, decideApproval, setProfile, unlinkPhone } from '../../lib/store'
 import { signedIn } from '../../lib/supabase-server'
 import { isValidTimeZone } from '../../lib/time'
 
@@ -72,4 +73,33 @@ export const saveTimeZone = async (formData: FormData): Promise<void> => {
   }
   revalidatePath('/app')
   back(failed ? 'zone' : undefined)
+}
+
+// Start linking Telegram: a one-time code, then off to the bot, which receives it when the person presses Start.
+export const connectTelegram = async (): Promise<void> => {
+  const bot = channelEnv().botUsername
+  if (!bot) back('phone')
+  const user = await signedIn().catch(() => null)
+  if (!user) redirect('/login?next=/app')
+  let code: string | null = null
+  try {
+    code = await createLinkCode(user.sb)
+  } catch {
+    code = null
+  }
+  if (!code) back('phone')
+  redirect(`https://t.me/${bot}?start=${code}`)
+}
+
+export const disconnectPhone = async (): Promise<void> => {
+  const user = await signedIn().catch(() => null)
+  if (!user) redirect('/login?next=/app')
+  let failed = false
+  try {
+    await unlinkPhone(user.sb)
+  } catch {
+    failed = true
+  }
+  revalidatePath('/app')
+  back(failed ? 'phone' : undefined)
 }
