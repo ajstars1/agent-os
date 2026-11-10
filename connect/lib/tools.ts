@@ -21,12 +21,18 @@ import {
   markApprovalSent,
   recentActivity,
   recordGoalReading,
+  requestAction,
   requestApproval,
   setProfile,
   updateTask,
   withinRate,
 } from './store'
+import { apiRead } from './api'
 import { unsendable } from './mail'
+import { readApiKey } from './mask-db'
+import { maskValue, privacyFor, unmaskArgs, type PrivacyDeps } from './privacy'
+import { sealedRequest } from './sealed-http'
+import { vaultKey } from './vault'
 import { notifyDraft } from './notify'
 import { outcomeLine, sendForUser } from './sender'
 import { userClient } from './supabase'
@@ -58,10 +64,22 @@ export const toText = (data: unknown): string =>
 const ok = (data: unknown): ToolResult => ({ content: [{ type: 'text', text: toText(data) }] })
 const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text: `Error: ${message}` }], isError: true })
 
+export interface RunOptions {
+  // arguments that end up inside a URL: real values put back into them are URL-encoded
+  urlArgs?: string[]
+  // the masking layer for this caller; the default reads it from the server's settings (null = off)
+  privacy?: (userId: string | null) => PrivacyDeps | null
+}
+
 // Builds the caller's client from the verified token on the request, applies the rate limit, runs the tool and
-// turns any error into a tool error the assistant can read.
+// turns any error into a tool error the assistant can read. Around the tool sits the masking layer: stand-ins in
+// the input become real values before the tool runs, and contact details in the result are masked before it leaves.
 export const run =
-  <A>(fn: (sb: SupabaseClient, args: A, who: Caller) => Promise<unknown>, client: (token: string) => SupabaseClient = userClient) =>
+  <A>(
+    fn: (sb: SupabaseClient, args: A, who: Caller) => Promise<unknown>,
+    client: (token: string) => SupabaseClient = userClient,
+    opts: RunOptions = {},
+  ) =>
   async (args: A, ctx: ServerContext): Promise<ToolResult> => {
     const token = ctx.http?.authInfo?.token
     if (!token) return fail('Not signed in')
@@ -70,7 +88,11 @@ export const run =
     try {
       const sb = client(token)
       if (!(await withinRate(sb, 'mcp', RATE_LIMIT, RATE_WINDOW_S))) return fail('Too many requests. Wait a minute and try again.')
-      return ok(await fn(sb, args, { userId: typeof userId === 'string' ? userId : null }))
+      const who: Caller = { userId: typeof userId === 'string' ? userId : null }
+      const privacy = (opts.privacy ?? privacyFor)(who.userId)
+      if (!privacy) return ok(await fn(sb, args, who))
+      const result = await fn(sb, await unmaskArgs(privacy, args, opts.urlArgs), who)
+      return ok(await maskValue(privacy, result, 'own'))
     } catch (e) {
       return fail(e instanceof Error ? e.message : 'unknown')
     }
@@ -222,11 +244,11 @@ export const registerTools = (server: McpServer): void => {
   server.registerTool(
     'approval_send',
     {
-      title: 'Have aos send an approved email',
+      title: 'Have aos send an approved email or run an approved request',
       description:
         'Sends one approved email draft from the person\'s own mailbox, word for word, using the mail login they saved on the ' +
-        'aos site (you never see it). Use it for approved email drafts that are still waiting, e.g. scheduled ones. If it ' +
-        'answers that there is no email connection, send the draft yourself and call approval_mark_sent.',
+        'aos site (you never see it), or runs one approved api_request. Use it for approved drafts that are still waiting, ' +
+        'e.g. scheduled ones. If it answers that there is no email connection, send the draft yourself and call approval_mark_sent.',
       inputSchema: z.object({ id: ID }),
       annotations: SEND,
     },
@@ -234,6 +256,56 @@ export const registerTools = (server: McpServer): void => {
       if (!who.userId) throw new Error('Not signed in')
       return outcomeLine(id, await sendForUser(who.userId, id))
     }),
+  )
+
+  server.registerTool(
+    'api_request',
+    {
+      title: 'Call one of the person\'s connected services',
+      description:
+        'Makes an HTTPS request to a service the person connected on their aos page, with their saved key. You name the key ' +
+        '(see settings for the names and hosts); you never see the key and cannot choose the host. GET runs now and returns ' +
+        'the reply, with email addresses and phone numbers shown as stand-ins like [EMAIL_12]. Any other method changes ' +
+        'something, so it is queued for the person\'s yes and aos runs it after they approve; you get the approval back. ' +
+        'Use "fields" to keep only the parts of a reply you need. Stand-ins may be used in path and body: aos puts the real value in.',
+      inputSchema: z.object({
+        key: z.string().regex(/^[a-z0-9_-]{1,40}$/).describe('Name of the saved key, e.g. razorpay'),
+        method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional().describe('Default GET'),
+        path: z.string().min(1).max(1000).regex(/^\/\S*$/).describe('Path and query on that service, e.g. /v1/payments?count=5'),
+        body: z.union([z.string().max(4000), z.record(z.string(), z.unknown()), z.array(z.unknown())]).optional().describe('For POST, PUT, PATCH: JSON (object or text)'),
+        content_type: z.enum(['application/json', 'application/x-www-form-urlencoded']).optional(),
+        fields: z.array(z.string().regex(/^[A-Za-z0-9_.-]{1,200}$/)).max(40).optional().describe('GET only: dot paths to keep, e.g. ["items.id","items.amount"]'),
+      }),
+      annotations: SEND,
+    },
+    run(
+      async (
+        sb,
+        a: { key: string; method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; path: string; body?: unknown; content_type?: string; fields?: string[] },
+        who,
+      ) => {
+        const userId = who.userId
+        const privacy = privacyFor(userId)
+        if (!userId || !privacy) throw new Error('Saved API keys are not set up on this server')
+        if ((a.method ?? 'GET') === 'GET') {
+          return apiRead(
+            { userId, vault: vaultKey(), readKey: (name) => readApiKey(userId, name), request: sealedRequest, mask: (v) => maskValue(privacy, v, 'api') },
+            { key: a.key, path: a.path, fields: a.fields },
+          )
+        }
+        const body = a.body === undefined ? null : typeof a.body === 'string' ? a.body : JSON.stringify(a.body)
+        const approval = await requestAction(sb, { key: a.key, method: a.method ?? 'GET', path: a.path, body, content_type: a.content_type })
+        return {
+          id: approval.id,
+          status: approval.status,
+          request: approval.recipient,
+          phone_pinged: await notifyDraft(sb, approval),
+          next: 'This changes something, so it waits for the person\'s yes on their aos page or phone. aos runs it when they approve. Check approval_list (status "sent" or "failed") for the answer.',
+        }
+      },
+      userClient,
+      { urlArgs: ['path'] },
+    ),
   )
 
   server.registerTool(
@@ -350,7 +422,8 @@ export const registerTools = (server: McpServer): void => {
       title: 'Settings',
       description:
         "Read or set the person's time zone (IANA name, e.g. Asia/Kolkata) and display name. Ask them before changing it. " +
-        'Reading also shows whether aos can send email for them. Logins and keys are never set here: the person adds them on the aos site.',
+        'Reading also shows whether aos can send email for them and which services they connected (for api_request). ' +
+        'Logins and keys are never set here: the person adds them on the aos site.',
       inputSchema: z.object({ timezone: z.string().max(64).optional(), display_name: z.string().max(80).optional() }),
       annotations: WRITE,
     },

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { randomBytes } from 'node:crypto'
 import { SMTPServer } from 'smtp-server'
 import { mailFailure, parseRecipient, sendMail, transportOptions, unsendable, verifyLogin, type MailLogin, type Server } from '../lib/mail'
+import type { SealedRequest, SealedResponse } from '../lib/sealed-http'
 import type { Claim } from '../lib/send-db'
 import { outcomeLine, sendApproved, type SenderDeps } from '../lib/sender'
 import type { Approval } from '../lib/types'
@@ -151,7 +152,10 @@ describe('the sealed send', () => {
     ciphertext: sealed,
   })
 
-  const harness = (opts: { claim?: Claim; claimError?: string; sendError?: unknown; key?: Buffer | null } = {}) => {
+  const harness = (
+    opts: { claim?: Claim; claimError?: string; sendError?: unknown; key?: Buffer | null; response?: SealedResponse; requestError?: unknown; maskFails?: boolean } = {},
+  ) => {
+    const requests: SealedRequest[] = []
     const finished: Array<[string, number, string, string]> = []
     const sent: Array<{ login: MailLogin; to: string; subject: string; text: string }> = []
     const deps: SenderDeps = {
@@ -168,8 +172,17 @@ describe('the sealed send', () => {
         if (opts.sendError) throw opts.sendError
         sent.push({ login, ...msg })
       },
+      request: async (req) => {
+        requests.push(req)
+        if (opts.requestError) throw opts.requestError
+        return opts.response ?? { status: 200, contentType: 'application/json', text: '{"id":"rfnd_1"}', truncated: false }
+      },
+      mask: async (_userId, text) => {
+        if (opts.maskFails) throw new Error('masking is down')
+        return text.replace(/[a-z.]+@example\.com/g, '[EMAIL_1]')
+      },
     }
-    return { deps, finished, sent }
+    return { deps, finished, sent, requests }
   }
 
   test('opens the login, sends the approved text, records it, and never repeats the password', async () => {
@@ -217,5 +230,67 @@ describe('the sealed send', () => {
     const broken = harness({ sendError: { code: 'ESOCKET', command: 'DATA' } })
     expect((await sendApproved(broken.deps)).kind).toBe('unknown')
     expect(broken.finished[0][2]).toBe('failed')
+  })
+
+  // ---- an approved API request ----
+  const API_KEY = 'rzp_live_KEY-SECRET-0123456789'
+  const apiClaim = (over: Partial<Claim['approval']> = {}, meta: Record<string, unknown> = { host: 'api.example.com', scheme: 'bearer', writes: 'ask' }): Claim => ({
+    user_id: USER,
+    approval: approval({
+      id: 21, channel: 'api', recipient: 'POST api.example.com/v1/refunds', subject: null, draft: 'POST https://api.example.com/v1/refunds',
+      action: { key: 'pay', method: 'POST', path: '/v1/refunds?x=1', body: '{"payment":"pay_1","to":"priya@example.com"}', content_type: 'application/json' },
+      ...over,
+    }),
+    meta,
+    ciphertext: seal(KEY, API_KEY, binding(USER, 'api:pay')),
+  })
+
+  test('an approved request runs once with the saved key, and the stored answer has no key and no address', async () => {
+    const h = harness({ claim: apiClaim(), response: { status: 201, contentType: 'application/json', text: `{"id":"rfnd_1","echo":"${API_KEY}","mail":"priya@example.com"}`, truncated: false } })
+    const out = await sendApproved(h.deps)
+    expect(out).toEqual({ kind: 'sent', to: 'POST api.example.com/v1/refunds (HTTP 201)', api: true })
+    expect(h.requests).toEqual([
+      { meta: { host: 'api.example.com', scheme: 'bearer', writes: 'ask' }, key: API_KEY, method: 'POST', path: '/v1/refunds?x=1', body: '{"payment":"pay_1","to":"priya@example.com"}', contentType: 'application/json' },
+    ])
+    expect(h.sent).toEqual([])
+    const [, id, outcome, result] = h.finished[0]
+    expect([id, outcome]).toEqual([21, 'sent'])
+    expect(result).toBe('HTTP 201. {"id":"rfnd_1","echo":"[KEY]","mail":"[EMAIL_1]"}')
+    expect(JSON.stringify([out, h.finished, outcomeLine(21, out)])).not.toContain('SECRET')
+  })
+
+  test('a refusal by the service is recorded and never retried; an unreachable service can be retried', async () => {
+    const refused = harness({ claim: apiClaim(), response: { status: 422, contentType: 'application/json', text: '{"error":"amount too high"}', truncated: false } })
+    expect(await sendApproved(refused.deps)).toEqual({ kind: 'refused', reason: 'the service answered HTTP 422' })
+    expect(refused.finished[0].slice(2)).toEqual(['failed', 'HTTP 422. {"error":"amount too high"}'])
+
+    const down = harness({ claim: apiClaim(), requestError: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND', delivered: false }) })
+    expect((await sendApproved(down.deps)).kind).toBe('not_sent')
+    expect(down.finished[0][2]).toBe('retry')
+
+    const broke = harness({ claim: apiClaim(), requestError: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET', delivered: true }) })
+    expect((await sendApproved(broke.deps)).kind).toBe('unknown')
+    expect(broke.finished[0][2]).toBe('failed')
+  })
+
+  test('when masking is down, only the status is stored', async () => {
+    const h = harness({ claim: apiClaim(), maskFails: true, response: { status: 200, contentType: 'application/json', text: '{"mail":"priya@example.com"}', truncated: false } })
+    await sendApproved(h.deps)
+    expect(h.finished[0][3]).toBe('HTTP 200')
+  })
+
+  test('a request with a broken key, a wrong owner or a bad saved host does not run', async () => {
+    const cases: Claim[] = [
+      { ...apiClaim(), ciphertext: seal(KEY, API_KEY, binding(USER, 'api:other')) },
+      { ...apiClaim(), ciphertext: seal(KEY, API_KEY, binding('22222222-2222-4222-8222-222222222222', 'api:pay')) },
+      apiClaim({}, { host: '127.0.0.1', scheme: 'bearer', writes: 'ask' }),
+      apiClaim({ action: null }),
+    ]
+    for (const claim of cases) {
+      const h = harness({ claim })
+      expect((await sendApproved(h.deps)).kind).toBe('not_sent')
+      expect(h.requests).toEqual([])
+      expect(h.finished[0][2]).toBe('retry')
+    }
   })
 })

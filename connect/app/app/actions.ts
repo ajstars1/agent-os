@@ -5,8 +5,20 @@ import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { channelEnv } from '../../lib/env'
 import { isProvider, verifyLogin, type Provider } from '../../lib/mail'
-import { sendForUser, type SendOutcome } from '../../lib/sender'
-import { createLinkCode, decideApproval, removeMailConnection, saveMailConnection, setProfile, unlinkPhone, withinRate } from '../../lib/store'
+import { isHeaderName, isHost, isKeyValue, type Scheme } from '../../lib/sealed-http'
+import { SELF_SENT, sendForUser, type SendOutcome } from '../../lib/sender'
+import {
+  createLinkCode,
+  decideApproval,
+  removeApiKey,
+  removeMailConnection,
+  saveApiKey,
+  saveMailConnection,
+  setMaskLevel,
+  setProfile,
+  unlinkPhone,
+  withinRate,
+} from '../../lib/store'
 import { binding, seal, vaultKey } from '../../lib/vault'
 import { signedIn } from '../../lib/supabase-server'
 import { isValidTimeZone } from '../../lib/time'
@@ -22,8 +34,9 @@ const done = (notice: string): never => redirect(`/app?n=${notice}`)
 
 // Where to land after aos tried to send an approved email.
 const afterSend = (o: SendOutcome): never => {
-  if (o.kind === 'sent') return done('sent')
+  if (o.kind === 'sent') return done(o.api ? 'ran' : 'sent')
   if (o.kind === 'skipped') return back()
+  if (o.kind === 'refused') return back('send_refused')
   return back(o.kind === 'unknown' ? 'send_unknown' : /login|Reconnect/.test(o.reason) ? 'send_login' : /recipient|subject/.test(o.reason) ? 'send_shape' : /limit/.test(o.reason) ? 'send_limit' : 'send')
 }
 
@@ -48,8 +61,8 @@ export const decideDraft = async (formData: FormData): Promise<void> => {
   }
   revalidatePath('/app')
   if (channel === null) back('decide')
-  if (decision !== 'approved' || channel !== 'email') back()
-  // The person said yes to an email: aos sends it now, from their own mailbox, if they connected one.
+  if (decision !== 'approved' || !SELF_SENT.has(channel ?? '')) back()
+  // The person said yes to an email or an API request: aos does it now, with their own saved login or key.
   afterSend(await sendForUser(user.userId, id).catch((): SendOutcome => ({ kind: 'not_sent', reason: 'unknown' })))
 }
 
@@ -194,4 +207,81 @@ export const disconnectPhone = async (): Promise<void> => {
   }
   revalidatePath('/app')
   back(failed ? 'phone' : undefined)
+}
+
+const keySchema = z.object({
+  name: z.string().regex(/^[a-z0-9_-]{1,40}$/),
+  host: z.string().max(253).refine(isHost),
+  scheme: z.enum(['bearer', 'basic', 'header']),
+  header: z.string().max(64).optional(),
+  key: z.string().min(8).max(2000),
+  writes: z.enum(['never', 'ask']),
+})
+
+// Accepts "api.example.com" or a pasted address like "https://api.example.com/v1/": only the host is kept.
+const hostOf = (raw: string): string => raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/[/?#].*$/, '')
+
+// Save an API key with the one host it may be sent to. It is sealed and never shown again, to anyone.
+export const connectApiKey = async (formData: FormData): Promise<void> => {
+  const vault = vaultKey()
+  if (!vault) back('mail_off')
+  const parsed = keySchema.safeParse({
+    name: String(formData.get('name') ?? '').trim().toLowerCase(),
+    host: hostOf(String(formData.get('host') ?? '')),
+    scheme: formData.get('scheme'),
+    header: String(formData.get('header') ?? '').trim() || undefined,
+    key: String(formData.get('key') ?? '').trim(),
+    writes: formData.get('writes') === 'ask' ? 'ask' : 'never',
+  })
+  if (!parsed.success) back('key_input')
+  const { name, host, header, key, writes } = parsed.data!
+  const scheme: Scheme = parsed.data!.scheme
+  if (!isKeyValue(key, scheme) || (scheme === 'header' && (!header || !isHeaderName(header)))) back('key_input')
+  const user = await signedIn().catch(() => null)
+  if (!user) redirect('/login?next=/app')
+  let failed = false
+  try {
+    const meta = { host, scheme, ...(scheme === 'header' && header ? { header } : {}), writes }
+    await saveApiKey(user.sb, name, meta, seal(vault!, key, binding(user.userId, `api:${name}`)))
+  } catch {
+    failed = true
+  }
+  revalidatePath('/app')
+  if (failed) back('key_save')
+  done('key')
+}
+
+const nameSchema = z.object({ name: z.string().regex(/^[a-z0-9_-]{1,40}$/) })
+
+export const disconnectApiKey = async (formData: FormData): Promise<void> => {
+  const parsed = nameSchema.safeParse({ name: formData.get('name') })
+  if (!parsed.success) back('input')
+  const user = await signedIn().catch(() => null)
+  if (!user) redirect('/login?next=/app')
+  let failed = false
+  try {
+    await removeApiKey(user.sb, parsed.data!.name)
+  } catch {
+    failed = true
+  }
+  revalidatePath('/app')
+  back(failed ? 'key_save' : undefined)
+}
+
+const levelSchema = z.object({ level: z.enum(['off', 'api', 'all']) })
+
+export const savePrivacy = async (formData: FormData): Promise<void> => {
+  const parsed = levelSchema.safeParse({ level: formData.get('level') })
+  if (!parsed.success) back('input')
+  const user = await signedIn().catch(() => null)
+  if (!user) redirect('/login?next=/app')
+  let failed = false
+  try {
+    await setMaskLevel(user.sb, parsed.data!.level)
+  } catch {
+    failed = true
+  }
+  revalidatePath('/app')
+  if (failed) back('privacy')
+  done('privacy')
 }

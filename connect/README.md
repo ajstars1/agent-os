@@ -18,7 +18,7 @@ Supabase Auth (OAuth 2.1 server, sign-in with Google)
 
 ## What a connected assistant can do
 
-17 tools: `agenda`, `task_list`, `task_add`, `task_update`, `task_done`, `task_delete`, `approval_request`, `approval_list`, `approval_send`, `approval_mark_sent`, `activity_log`, `activity_recent`, `goal_set`, `goal_list`, `goal_progress`, `event_add`, `settings`.
+18 tools: `agenda`, `task_list`, `task_add`, `task_update`, `task_done`, `task_delete`, `approval_request`, `approval_list`, `approval_send`, `approval_mark_sent`, `api_request`, `activity_log`, `activity_recent`, `goal_set`, `goal_list`, `goal_progress`, `event_add`, `settings`.
 
 There is **no tool to approve a draft**. The assistant writes the text with `approval_request`; the person presses yes or no on `/app`; the assistant then sends the approved text and calls `approval_mark_sent`.
 
@@ -39,17 +39,21 @@ Every user, and every app they connect, holds a real Supabase token and could ca
 | A saved login cannot be read back by anyone | `secrets.ciphertext` has no select grant; it is sealed with a key that is not in the database; only `send_claim()` (server secret key) returns it |
 | Only the person can save or remove a login | `put_secret()` / `remove_secret()` refuse tokens with a `client_id`; a connected app sees no rows in `secrets` |
 | An email is sent at most once, and at most 50 a day | `send_claim()` takes the draft for one sender; `send_finish()` records the outcome |
+| A saved API key can only go to the host the person entered | The host is stored with the key by `put_secret()` (public DNS names only) and is never taken from an assistant; the socket refuses private addresses at connect time |
+| A request that changes something runs only after the person's yes, exactly as shown | `request_action()` writes the row and its text from the same data; `guard_approval` refuses hand-written, edited or self-finished API requests |
+| An assistant cannot turn a stand-in back into a value, or switch masking off | `handles` is closed to tokens with a `client_id`; `handles_resolve()` is server only; `guard_profile` refuses `mask_level` changes from an app |
 | Only the person can link a phone | `create_link_code()` refuses tokens with a `client_id`; codes are one-time, 15 minutes, stored hashed |
 | A phone decides only its own person's drafts | `channel_*` functions run only with the server secret key and scope every query to the linked user; 60 messages a minute |
 
-Reads and writes of a person's data always run with that person's own token. The Supabase secret key is used in two places only, each a short list of database functions: the Telegram webhook (`lib/channel-db.ts`: `channel_claim`, `channel_snapshot`, `channel_decide`) and sending an approved email (`lib/send-db.ts`: `send_claim`, `channel_send_claim`, `send_finish`). The MCP endpoint accepts only tokens issued to a connected app; the person's own website session never passes through an assistant.
+Reads and writes of a person's data always run with that person's own token. The Supabase secret key is used through three small files, each a short list of database functions: the Telegram webhook (`lib/channel-db.ts`), sending an approved email or request (`lib/send-db.ts`), and masking plus reading a saved key (`lib/mask-db.ts`: `handles_mask`, `handles_resolve`, `api_key_read`). The MCP endpoint accepts only tokens issued to a connected app; the person's own website session never passes through an assistant.
 
 ## Tests
 
-`bun test` (90 tests):
+`bun test` (134 tests):
 
 - `tests/db.test.ts` runs the real migration on an in-process Postgres (PGlite) and attacks it as a second user and as a connected app. It also checks that every column and database function the code names exists in the schema.
 - `tests/vault.test.ts` covers sealing (wrong key, wrong owner and changed values do not open), the mail rules, a real SMTP exchange against a local server (login check, the approved text arriving word for word, header injection, a refused recipient), and the whole sealed send with its failure paths.
+- `tests/privacy.test.ts` covers finding contact details (and not mistaking ids, amounts or dates for phone numbers), masking and putting values back, the privacy levels, which addresses a key may be sent to, real HTTP exchanges against a local server (key header, body word for word, no redirects followed, size cap), and a read for an assistant end to end.
 - `tests/bot.test.ts` covers the Telegram bot: commands, yes/no, buttons, the webhook secret check, unlinked chats, group chats ignored, and that only our own error messages reach the chat.
 - `tests/lib.test.ts` covers time zones (including daylight-saving days), repeating tasks, the agenda, goal pace, the redirect guard and the tool wrapper.
 
@@ -87,7 +91,25 @@ The rule: **the model works with names and drafts; the server holds the secrets 
 - If the provider refuses the login or the recipient, nothing was sent: the draft stays approved and can be sent again. If the connection breaks mid-send, the draft is marked failed and is never retried by itself.
 - The mail server's address always comes from the fixed provider list in `lib/mail.ts`, never from input.
 
-Not built yet: named API keys with sealed requests, masking of emails and phone numbers in tool results, a timer that sends scheduled emails by itself, and a per-recipient cap.
+## Connected services (API keys)
+
+- On `/app`, under **Connected services**, the person saves a key with a short name, the service address (for example `api.razorpay.com`) and how the service wants the key (Bearer, Basic, or a header of its own). It is sealed like the mail login.
+- An assistant sees the names and hosts (`settings` tool) and calls `api_request` with a name and a path. It never sees the key and cannot choose the host.
+- **GET runs at once.** The reply comes back with the key scrubbed out (also in encoded forms), contact details masked, compact, cut at 12,000 characters, and reduced to the `fields` asked for.
+- **Anything else waits for a yes.** POST, PUT, PATCH and DELETE become an approval that shows the exact request. It runs when the person approves, on `/app` or from Telegram, and only if they ticked "allow requests that change something" for that key. The first part of the answer is stored with the approval.
+- Guards: public hosts only (checked when saved, and again on the socket's own DNS lookup, so a name cannot be re-pointed at a private address), HTTPS only, redirects not followed, replies read up to 256 KB, 30 reads a minute, 200 approved requests a day, 20 keys per person.
+
+## Masking
+
+- An email address or phone number in a reply from a connected service reaches the assistant as a stand-in: `[EMAIL_12]`, `[PHONE_3]`. The same value always gets the same stand-in for that person, so the assistant can still follow who is who across conversations.
+- When the assistant uses a stand-in (a draft's recipient, a request path or body), the server puts the real value back before it stores or sends. The person sees real values on `/app` and on their phone.
+- Once a value has a stand-in, it is masked in every tool result, so it cannot be read back by saving it in a task and listing the task.
+- The person chooses the level on `/app` under **Privacy**: services only (default), also their own tasks, drafts and log, or off. The same section has a "Who is this?" box that turns a stand-in back into the value, for the person only.
+- If masking a service reply fails, the reply is not returned.
+
+Limits, plainly: text the person types into their assistant's chat reaches the model before aos sees it; names in free text are not masked; a service that returns a value in a changed form (encoded, split) is not caught; phone numbers are found by pattern, so an unusual format can slip through and a ten-digit number in free text can be masked by mistake.
+
+Not built yet: a timer that sends scheduled emails by itself, a per-recipient cap, a look-up of stand-ins from Telegram.
 
 ## Phone (Telegram)
 

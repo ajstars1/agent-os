@@ -2,13 +2,37 @@ import { redirect } from 'next/navigation'
 import { goalPace } from '../../lib/agenda'
 import { channelEnv } from '../../lib/env'
 import { PROVIDERS, unsendable } from '../../lib/mail'
-import { listApprovals, loadAgenda, mailConnection, phoneLink, type MailConnection, type PhoneLink } from '../../lib/store'
+import {
+  apiKeys,
+  getMaskLevel,
+  listApprovals,
+  loadAgenda,
+  lookupHandle,
+  mailConnection,
+  phoneLink,
+  type ApiKeyInfo,
+  type MailConnection,
+  type MaskLevel,
+  type PhoneLink,
+} from '../../lib/store'
 import { vaultKey } from '../../lib/vault'
 import { signedIn, siteOrigin } from '../../lib/supabase-server'
 import { fmtDay, fmtWhen } from '../../lib/time'
 import type { Approval, Goal, Task } from '../../lib/types'
 import { ConnectSteps } from './_ui/connect-steps'
-import { connectEmail, connectTelegram, decideDraft, disconnectApp, disconnectEmail, disconnectPhone, saveTimeZone, sendNow } from './actions'
+import {
+  connectApiKey,
+  connectEmail,
+  connectTelegram,
+  decideDraft,
+  disconnectApiKey,
+  disconnectApp,
+  disconnectEmail,
+  disconnectPhone,
+  savePrivacy,
+  saveTimeZone,
+  sendNow,
+} from './actions'
 
 export const metadata = { title: 'aos · today', robots: { index: false, follow: false } }
 export const dynamic = 'force-dynamic'
@@ -29,12 +53,19 @@ const MESSAGES: Record<string, string> = {
   send_login: 'Approved, but your mail provider refused the saved login. Reconnect your email below, then press Send now.',
   send_shape: 'Approved, but aos cannot send this one itself: it needs exactly one email address and a subject. Your assistant can still send it.',
   send_limit: 'Approved, but the limit of 50 emails a day is reached. Send it tomorrow.',
-  send_unknown: 'The connection broke while sending. Check your Sent folder before sending it again.',
+  send_unknown: 'The connection broke while sending. Check your Sent folder, or the service, before trying again.',
+  send_refused: 'Approved and run, but the service refused the request. The answer is shown with the draft; it is not retried.',
+  key_input: 'Check the key details: a short name (letters, digits, - or _), the service address such as api.example.com, and the key itself.',
+  key_save: 'Could not save or remove that key. Try again in a minute.',
+  privacy: 'Could not save the privacy setting. Try again in a minute.',
 }
 
 const NOTICES: Record<string, string> = {
   sent: 'Sent from your mailbox.',
   mail: 'Email connected. Approved emails now go out from your own mailbox.',
+  ran: 'Done. The request ran with your saved key.',
+  key: 'Key saved. Your assistant can now use it by name, without seeing it.',
+  privacy: 'Privacy setting saved.',
 }
 
 const Section = ({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) => (
@@ -52,8 +83,27 @@ const Empty = ({ text }: { text: string }) => <p className="rounded-xl border bo
 const where = (a: Approval): string => `${a.channel}${a.recipient ? ` to ${a.recipient}` : ''}`
 
 // True when pressing yes makes aos send this draft itself, right away.
-const sendsOnYes = (a: Approval, mail: MailConnection | null): boolean =>
-  mail !== null && a.channel === 'email' && unsendable(a) === null && (!a.send_after || new Date(a.send_after).getTime() <= Date.now())
+const sendsOnYes = (a: Approval, mail: MailConnection | null): boolean => {
+  if (a.send_after && new Date(a.send_after).getTime() > Date.now()) return false
+  if (a.channel === 'api') return true
+  return mail !== null && a.channel === 'email' && unsendable(a) === null
+}
+
+const yesHint = (a: Approval, mail: MailConnection | null): string =>
+  a.channel === 'api'
+    ? 'Yes runs this request now with your saved key.'
+    : sendsOnYes(a, mail)
+      ? `Yes sends it now from ${mail?.username}.`
+      : 'Yes approves it. Your assistant sends it the next time you talk to it.'
+
+const yesLabel = (a: Approval, mail: MailConnection | null): string =>
+  a.channel === 'api' ? 'Yes, run it now' : sendsOnYes(a, mail) ? 'Yes, send now' : 'Yes, approve'
+
+const LEVELS: { id: MaskLevel; label: string }[] = [
+  { id: 'api', label: 'Hide email addresses and phone numbers that come from my connected services (recommended)' },
+  { id: 'all', label: 'Also hide them in my own tasks, drafts and log' },
+  { id: 'off', label: 'Show everything to my assistant' },
+]
 
 const Draft = ({ a, tz, mail }: { a: Approval; tz: string; mail: MailConnection | null }) => (
   <li className="rounded-xl border border-line bg-raised p-4">
@@ -63,12 +113,10 @@ const Draft = ({ a, tz, mail }: { a: Approval; tz: string; mail: MailConnection 
     </p>
     {a.subject ? <p className="mt-2 break-words text-sm font-medium">{a.subject}</p> : null}
     <p className="mt-2 whitespace-pre-wrap break-words text-sm">{a.draft}</p>
-    <p className="mt-3 text-xs text-faint">
-      {sendsOnYes(a, mail) ? `Yes sends it now from ${mail?.username}.` : 'Yes approves it. Your assistant sends it the next time you talk to it.'}
-    </p>
+    <p className="mt-3 text-xs text-faint">{yesHint(a, mail)}</p>
     <form action={decideDraft} className="mt-4">
       <input type="hidden" name="id" value={a.id} />
-      <details className="mb-3">
+      <details className="mb-3" hidden={a.channel === 'api'}>
         <summary className="cursor-pointer text-sm text-dim underline underline-offset-4">Change the text first</summary>
         <label htmlFor={`draft-${a.id}`} className="sr-only">
           Edited text for draft {a.id}
@@ -87,7 +135,7 @@ const Draft = ({ a, tz, mail }: { a: Approval; tz: string; mail: MailConnection 
           No, don&apos;t send
         </button>
         <button type="submit" name="decision" value="approved" className="rounded-lg bg-good px-4 py-2.5 text-sm font-medium text-ground active:opacity-80">
-          {sendsOnYes(a, mail) ? 'Yes, send now' : 'Yes, approve'}
+          {yesLabel(a, mail)}
         </button>
       </div>
     </form>
@@ -126,15 +174,17 @@ const TaskRow = ({ t, tz, late }: { t: Task; tz: string; late: boolean }) => (
   </li>
 )
 
-const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n?: string }> }) => {
-  const { e, n } = await searchParams
+const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n?: string; who?: string }> }) => {
+  const { e, n, who } = await searchParams
   const user = await signedIn().catch(() => null)
   if (!user) redirect('/login?next=/app')
 
   const now = new Date()
   const phoneOn = channelEnv().botUsername !== null
   const mailOn = vaultKey() !== null && channelEnv().secretKey !== null
-  const [{ agenda, tz }, approved, grants, origin, phone, mail] = await Promise.all([
+  // "EMAIL_12", "[phone_3]" ... typed into the look-up box
+  const asked = /^\[?(EMAIL|PHONE)_(\d{1,9})\]?$/i.exec((who ?? '').trim())
+  const [{ agenda, tz }, approved, grants, origin, phone, mail, keys, level, askedValue] = await Promise.all([
     loadAgenda(user.sb, 1, now),
     listApprovals(user.sb, 'approved'),
     user.sb.auth.oauth.listGrants().then(
@@ -144,6 +194,11 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
     siteOrigin(),
     phoneOn ? phoneLink(user.sb).catch((): PhoneLink | null => null) : Promise.resolve(null),
     mailOn ? mailConnection(user.sb).catch((): MailConnection | null => null) : Promise.resolve(null),
+    mailOn ? apiKeys(user.sb).catch((): ApiKeyInfo[] => []) : Promise.resolve([]),
+    mailOn ? getMaskLevel(user.sb).catch((): MaskLevel => 'api') : Promise.resolve<MaskLevel>('api'),
+    mailOn && asked
+      ? lookupHandle(user.sb, asked[1].toLowerCase() === 'email' ? 'email' : 'phone', Number(asked[2])).catch(() => null)
+      : Promise.resolve(null),
   ])
   const message = e ? MESSAGES[e] : undefined
   const notice = n ? NOTICES[n] : undefined
@@ -337,6 +392,115 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
               </button>
             </form>
           )}
+        </Section>
+      ) : null}
+
+      {mailOn ? (
+        <Section title="Connected services" count={keys.length}>
+          {keys.length ? (
+            <ul className="mb-3 space-y-2">
+              {keys.map((k) => (
+                <li key={k.name} className="flex items-center justify-between gap-3 rounded-xl border border-line bg-raised p-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm">
+                      {k.name} <span className="text-faint">· {k.host}</span>
+                    </p>
+                    <p className="text-xs text-faint">{k.writes === 'ask' ? 'Can read. Changes wait for your yes.' : 'Can read only.'}</p>
+                  </div>
+                  <form action={disconnectApiKey}>
+                    <input type="hidden" name="name" value={k.name} />
+                    <button type="submit" className="rounded-lg border border-line px-3 py-1.5 text-sm active:bg-lift">
+                      Remove
+                    </button>
+                  </form>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <details className="rounded-xl border border-line bg-raised p-4" open={keys.length === 0}>
+            <summary className="cursor-pointer text-sm text-dim">Add a service key</summary>
+            <form action={connectApiKey} className="mt-3 space-y-3" autoComplete="off">
+              <p className="text-sm text-dim">
+                Let your assistant use a service for you (payments, shop, CRM) without ever seeing the key. The key can only be
+                sent to the address you enter here.
+              </p>
+              <div>
+                <label htmlFor="key-name" className="text-xs text-faint">
+                  Short name your assistant will use
+                </label>
+                <input id="key-name" name="name" required pattern="[a-z0-9_\-]{1,40}" maxLength={40} placeholder="razorpay" autoComplete="off" className="mt-1 w-full rounded-lg border border-line bg-ground px-3 py-2 text-sm outline-none focus:border-dim" />
+              </div>
+              <div>
+                <label htmlFor="key-host" className="text-xs text-faint">
+                  Service address
+                </label>
+                <input id="key-host" name="host" required maxLength={300} placeholder="api.razorpay.com" autoComplete="off" className="mt-1 w-full rounded-lg border border-line bg-ground px-3 py-2 text-sm outline-none focus:border-dim" />
+              </div>
+              <div>
+                <label htmlFor="key-scheme" className="text-xs text-faint">
+                  How the service wants the key
+                </label>
+                <select id="key-scheme" name="scheme" required className="mt-1 w-full rounded-lg border border-line bg-ground px-3 py-2 text-sm outline-none focus:border-dim">
+                  <option value="bearer">Bearer token (most services)</option>
+                  <option value="basic">Basic: key id and secret, written as id:secret</option>
+                  <option value="header">A header of its own (name it below)</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="key-header" className="text-xs text-faint">
+                  Header name (only for the last choice), e.g. X-API-Key
+                </label>
+                <input id="key-header" name="header" maxLength={64} autoComplete="off" className="mt-1 w-full rounded-lg border border-line bg-ground px-3 py-2 text-sm outline-none focus:border-dim" />
+              </div>
+              <div>
+                <label htmlFor="key-value" className="text-xs text-faint">
+                  The key
+                </label>
+                <input id="key-value" name="key" type="password" required minLength={8} maxLength={2000} autoComplete="new-password" className="mt-1 w-full rounded-lg border border-line bg-ground px-3 py-2 text-sm outline-none focus:border-dim" />
+              </div>
+              <label className="flex items-start gap-2 text-sm text-dim">
+                <input type="checkbox" name="writes" value="ask" className="mt-1" />
+                <span>Allow requests that change something. Each one waits for my yes first.</span>
+              </label>
+              <button type="submit" className="w-full rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-ground active:opacity-80">
+                Save key
+              </button>
+            </form>
+          </details>
+        </Section>
+      ) : null}
+
+      {mailOn ? (
+        <Section title="Privacy">
+          <form action={savePrivacy} className="space-y-2 rounded-xl border border-line bg-raised p-4">
+            {LEVELS.map((l) => (
+              <label key={l.id} className="flex items-start gap-2 text-sm">
+                <input type="radio" name="level" value={l.id} defaultChecked={level === l.id} className="mt-1" />
+                <span>{l.label}</span>
+              </label>
+            ))}
+            <p className="text-xs text-faint">
+              A hidden value reaches your assistant as a stand-in such as [EMAIL_12]. It can still use it; aos puts the real value
+              in when it sends. You always see real values here and on your phone.
+            </p>
+            <button type="submit" className="rounded-lg border border-line px-3 py-1.5 text-sm active:bg-lift">
+              Save
+            </button>
+          </form>
+          <form method="get" action="/app" className="mt-3 flex gap-2">
+            <label htmlFor="who" className="sr-only">
+              Stand-in to look up
+            </label>
+            <input id="who" name="who" defaultValue={asked ? `${asked[1].toUpperCase()}_${asked[2]}` : ''} maxLength={20} placeholder="EMAIL_12" className="min-w-0 flex-1 rounded-lg border border-line bg-ground px-3 py-2 text-sm outline-none focus:border-dim" />
+            <button type="submit" className="shrink-0 rounded-lg border border-line px-3 py-2 text-sm active:bg-lift">
+              Who is this?
+            </button>
+          </form>
+          {asked ? (
+            <p role="status" className="mt-2 break-words text-sm">
+              {askedValue ? `${asked[1].toUpperCase()}_${asked[2]} is ${askedValue}` : `No ${asked[1].toUpperCase()}_${asked[2]} on your account.`}
+            </p>
+          ) : null}
         </Section>
       ) : null}
 

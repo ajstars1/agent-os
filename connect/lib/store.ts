@@ -312,6 +312,83 @@ export const removeMailConnection = async (sb: SupabaseClient): Promise<void> =>
 
 export interface ConnectionStatus {
   email: { connected: boolean; address_hint?: string }
+  api_keys: { name: string; host: string; changes: string }[]
+}
+
+export interface ApiKeyInfo {
+  name: string
+  host: string
+  scheme: string
+  writes: string
+}
+
+// The person's own view of their saved keys: names and hosts, never the keys.
+export const apiKeys = async (sb: SupabaseClient): Promise<ApiKeyInfo[]> => {
+  const { data, error } = await sb.from('secrets').select('name,meta').eq('kind', 'api').is('deleted_at', null).order('name')
+  if (error) throw new Error(error.message)
+  return ((data ?? []) as { name: string; meta: Record<string, unknown> }[]).map((r) => ({
+    name: r.name,
+    host: String(r.meta.host ?? ''),
+    scheme: String(r.meta.scheme ?? ''),
+    writes: String(r.meta.writes ?? 'never'),
+  }))
+}
+
+export const saveApiKey = async (
+  sb: SupabaseClient,
+  name: string,
+  meta: { host: string; scheme: string; header?: string; writes: 'never' | 'ask' },
+  sealed: string,
+): Promise<void> => {
+  const { error } = await sb.rpc('put_secret', { p_kind: 'api', p_meta: meta, p_ciphertext: sealed, p_name: name })
+  if (error) throw new Error(error.message)
+}
+
+export const removeApiKey = async (sb: SupabaseClient, name: string): Promise<void> => {
+  const { error } = await sb.rpc('remove_secret', { p_kind: 'api', p_name: name })
+  if (error) throw new Error(error.message)
+}
+
+// Ask for a request that changes something. It waits for the person's yes; aos then makes it with the saved key.
+export const requestAction = async (
+  sb: SupabaseClient,
+  input: { key: string; method: string; path: string; body?: string | null; content_type?: string },
+): Promise<Approval> =>
+  one<Approval>(
+    await sb.rpc('request_action', {
+      p_key: input.key,
+      p_method: input.method,
+      p_path: input.path,
+      p_body: input.body ?? null,
+      p_content_type: input.content_type ?? null,
+    }),
+  )
+
+export type MaskLevel = 'off' | 'api' | 'all'
+
+export const getMaskLevel = async (sb: SupabaseClient): Promise<MaskLevel> => {
+  const { data, error } = await sb.from('profiles').select('mask_level').is('deleted_at', null).maybeSingle()
+  if (error) throw new Error(error.message)
+  const level = (data as { mask_level: string } | null)?.mask_level
+  return level === 'off' || level === 'all' ? level : 'api'
+}
+
+// The database refuses this for a connected app.
+export const setMaskLevel = async (sb: SupabaseClient, level: MaskLevel): Promise<void> => {
+  const existing = await sb.from('profiles').select('user_id').maybeSingle()
+  if (existing.error) throw new Error(existing.error.message)
+  const q = existing.data
+    ? sb.from('profiles').update({ mask_level: level }).eq('user_id', (existing.data as { user_id: string }).user_id)
+    : sb.from('profiles').insert({ mask_level: level })
+  const { error } = await q
+  if (error) throw new Error(error.message)
+}
+
+// What a stand-in such as [EMAIL_12] stands for. Only the person, on the site.
+export const lookupHandle = async (sb: SupabaseClient, kind: 'email' | 'phone', n: number): Promise<string | null> => {
+  const { data, error } = await sb.from('handles').select('value').eq('kind', kind).eq('n', n).is('deleted_at', null).maybeSingle()
+  if (error) throw new Error(error.message)
+  return (data as { value: string } | null)?.value ?? null
 }
 
 // What an assistant may know about the person's connections: that one exists, and a hint of the address.

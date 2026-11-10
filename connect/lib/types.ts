@@ -18,6 +18,15 @@ export interface Task {
   updated_at: string
 }
 
+// The exact request behind an approval on the "api" channel.
+export interface ApprovalAction {
+  key: string
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  path: string
+  body: string | null
+  content_type: string
+}
+
 export interface Approval {
   id: number
   task_id: number | null
@@ -30,6 +39,8 @@ export interface Approval {
   send_after: string | null
   created_at: string
   decided_at: string | null
+  // only on rows read by the server for sending
+  action?: ApprovalAction | null
 }
 
 export interface Goal {

@@ -10,6 +10,7 @@ import { ACTIVITY_COLS, APPROVAL_COLS, EVENT_COLS, GOAL_COLS, TASK_COLS } from '
 
 const ALICE = '11111111-1111-4111-8111-111111111111'
 const BOB = '22222222-2222-4222-8222-222222222222'
+const E_NEWLINE = '/x\ny'
 const APP = 'a0000000-0000-4000-8000-00000000000a' // an OAuth client id, as in a token issued to Claude or ChatGPT
 
 // The parts of a Supabase project the migration relies on: roles, the auth schema and its two helpers.
@@ -358,8 +359,8 @@ describe('the vault and the sealed send', () => {
   })
 
   test('an assistant learns only that email is connected, with a hint of the address', async () => {
-    expect((await as(aliceApp, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: true, address_hint: 'a***@example.com' } })
-    expect((await as(bob, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: false } })
+    expect((await as(aliceApp, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: true, address_hint: 'a***@example.com' }, api_keys: [] })
+    expect((await as(bob, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: false }, api_keys: [] })
   })
 
   test('users and apps cannot call the send functions or claim a send by hand', async () => {
@@ -444,11 +445,170 @@ describe('the vault and the sealed send', () => {
     expect((await as(alice, `select remove_secret('smtp') as ok`))[0].ok).toBe(true)
     const rows = (await pg.query<{ ciphertext: string; gone: boolean }>(`select ciphertext, deleted_at is not null as gone from secrets where user_id = $1`, [ALICE])).rows
     expect(rows).toEqual([{ ciphertext: '', gone: true }])
-    expect((await as(aliceApp, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: false } })
+    expect((await as(aliceApp, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: false }, api_keys: [] })
     await pg.query(`update approvals set send_claimed_at = null where user_id = $1 and draft = 'x'`, [ALICE])
     const id = await newEmail(aliceApp)
     await as(alice, `select decide_approval($1, 'approved')`, [id])
     await fails(claim(ALICE, id), /no email connection/)
+  })
+})
+
+describe('saved API keys', () => {
+  const server: Who = { role: 'service_role' }
+  const sealedKey = (user: string, name: string): string => seal(randomBytes(32), 'sk_live_SECRET', binding(user, `api:${name}`))
+  const meta = (over: Record<string, unknown> = {}): string => JSON.stringify({ host: 'api.example.com', scheme: 'bearer', writes: 'ask', ...over })
+  const put = (who: Who, name: string, m: string): Promise<Row[]> => as(who, 'select put_secret($1, $2::jsonb, $3, $4)', ['api', m, sealedKey(ALICE, name), name])
+
+  test('only the person saves a key, and only for a public host', async () => {
+    await fails(put(aliceApp, 'pay', meta()), /assistant cannot/)
+    for (const host of ['localhost', '127.0.0.1', '10.0.0.5', 'intranet', 'db.internal', 'printer.local', 'evil.com/x', 'API.EXAMPLE.COM', 'a@b.com']) {
+      await fails(put(alice, 'pay', meta({ host })), /public address/)
+    }
+    await fails(put(alice, 'pay', meta({ scheme: 'query' })), /Unknown way/)
+    await fails(put(alice, 'pay', meta({ scheme: 'header', header: 'X Bad' })), /header name/)
+    await fails(put(alice, 'pay', meta({ writes: 'always' })), /never or ask/)
+    await fails(put(alice, 'Bad Name', meta()), /check constraint/)
+    await put(alice, 'pay', meta())
+    await put(alice, 'shop', meta({ host: 'shop.example.org', writes: 'never' }))
+    await put(alice, 'pay', meta()) // saving again replaces
+    expect(await as(alice, `select name, meta ->> 'host' as host from secrets where kind = 'api' and deleted_at is null order by name`)).toEqual([
+      { name: 'pay', host: 'api.example.com' },
+      { name: 'shop', host: 'shop.example.org' },
+    ])
+    await fails(as(alice, `select ciphertext from secrets where kind = 'api'`), /permission denied/)
+    expect(await as(aliceApp, 'select name from secrets')).toEqual([])
+    expect(await as(bob, 'select name from secrets')).toEqual([])
+  })
+
+  test('an assistant sees names and hosts, never a key', async () => {
+    const s = (await as(aliceApp, 'select connection_status() as s'))[0].s as { api_keys: Row[] }
+    expect(s.api_keys).toEqual([
+      { name: 'pay', host: 'api.example.com', changes: 'after the person says yes' },
+      { name: 'shop', host: 'shop.example.org', changes: 'not allowed' },
+    ])
+    expect(JSON.stringify(s)).not.toContain('v1.')
+  })
+
+  test('only the server reads a key, for that person, at most 30 times a minute', async () => {
+    await fails(as(alice, `select api_key_read($1, 'pay')`, [ALICE]), /permission denied/)
+    await fails(as(aliceApp, `select api_key_read($1, 'pay')`, [ALICE]), /permission denied/)
+    const got = (await as(server, `select api_key_read($1, 'pay') as k`, [ALICE]))[0].k as { meta: Row; ciphertext: string }
+    expect(got.meta.host).toBe('api.example.com')
+    expect(got.ciphertext).toMatch(/^v1\./)
+    await fails(as(server, `select api_key_read($1, 'pay')`, [BOB]), /No API key named "pay"/)
+    await fails(as(server, `select api_key_read($1, 'nope')`, [ALICE]), /No API key named "nope"/)
+    await pg.query(`update rate_hits set hits = 30 where user_id = $1 and bucket = 'api'`, [ALICE])
+    await fails(as(server, `select api_key_read($1, 'pay')`, [ALICE]), /Too many API requests/)
+    await pg.query(`delete from rate_hits where bucket = 'api'`)
+  })
+
+  test('a request that changes something is written by the database, exactly as it will run', async () => {
+    const [ap] = await as(aliceApp, `select * from request_action('pay', 'POST', '/v1/refunds?x=1', '{"payment":"pay_1"}')`)
+    expect([ap.status, ap.channel, ap.recipient]).toEqual(['pending', 'api', 'POST api.example.com/v1/refunds?x=1'])
+    expect(ap.draft).toBe('POST https://api.example.com/v1/refunds?x=1\n(with your saved key "pay")\n\n{"payment":"pay_1"}')
+    expect(ap.action).toEqual({ key: 'pay', method: 'POST', path: '/v1/refunds?x=1', body: '{"payment":"pay_1"}', content_type: 'application/json' })
+    await fails(as(aliceApp, `select request_action('shop', 'POST', '/x')`), /read only/)
+    await fails(as(aliceApp, `select request_action('nope', 'POST', '/x')`), /No API key named/)
+    await fails(as(bob, `select request_action('pay', 'POST', '/x')`), /No API key named/)
+    await fails(as(aliceApp, `select request_action('pay', 'GET', '/x')`), /method must be/)
+    for (const path of ['x', '/a b', E_NEWLINE, '//' + 'x'.repeat(1000)]) await fails(as(aliceApp, `select request_action('pay', 'POST', $1)`, [path]), /path must start/)
+    await fails(as(aliceApp, `select request_action('pay', 'POST', '/x', $1)`, ['y'.repeat(4001)]), /too long/)
+    await fails(as(aliceApp, `select request_action('pay', 'POST', '/x', 'a', 'text/html')`), /content_type/)
+  })
+
+  test('nobody can hand-write, edit or fake-finish an API request', async () => {
+    await fails(as(aliceApp, `insert into approvals (channel, draft) values ('api', 'GET https://api.example.com/balance')`), /must be asked with api_request/)
+    await fails(as(alice, `insert into approvals (channel, draft, action) values ('email', 'hi', '{"key":"pay","method":"POST","path":"/transfer"}')`), /must be asked with api_request/)
+    const [ap] = await as(aliceApp, `select * from request_action('pay', 'DELETE', '/v1/customers/7')`)
+    await fails(as(aliceApp, `update approvals set action = jsonb_set(action, '{path}', '"/v1/customers/8"') where id = $1`, [ap.id]), /cannot change a draft after asking/)
+    await fails(as(aliceApp, `update approvals set draft = 'GET something harmless' where id = $1`, [ap.id]), /cannot change a draft after asking/)
+    await fails(as(alice, `update approvals set draft = 'looks different' where id = $1`, [ap.id]), /cannot be edited/)
+    await fails(as(alice, `select decide_approval($1, 'approved', 'edited text')`, [ap.id]), /cannot be edited/)
+    const [mail] = await as(aliceApp, `select (request_approval('email', 'Hi')).id as id`)
+    await fails(as(alice, `update approvals set action = '{"key":"pay","method":"POST","path":"/x"}', channel = 'api' where id = $1`, [mail.id]), /cannot be edited/)
+    await as(alice, `select decide_approval($1, 'approved')`, [ap.id])
+    await fails(as(aliceApp, `select mark_approval_sent($1, 'I did it myself')`, [ap.id]), /Only aos can run/)
+    await fails(as(alice, `update approvals set status = 'sent' where id = $1`, [ap.id]), /Only aos can run/)
+  })
+
+  test('the server claims an approved request once, with the right key', async () => {
+    const [ap] = await as(aliceApp, `select * from request_action('pay', 'POST', '/v1/refunds', '{"a":1}')`)
+    await fails(as(server, 'select send_claim($1, $2)', [ALICE, ap.id]), /it is pending, not approved/)
+    await as(alice, `select decide_approval($1, 'approved')`, [ap.id])
+    await fails(as(server, 'select send_claim($1, $2)', [BOB, ap.id]), /not found/)
+    const got = (await as(server, 'select send_claim($1, $2) as c', [ALICE, ap.id]))[0].c as { approval: { action: Row }; meta: Row; ciphertext: string }
+    expect([got.meta.host, got.approval.action.path]).toEqual(['api.example.com', '/v1/refunds'])
+    await fails(as(server, 'select send_claim($1, $2)', [ALICE, ap.id]), /already being sent/)
+    await as(server, `select send_finish($1, $2, 'sent', 'HTTP 201')`, [ALICE, ap.id])
+    expect((await as(alice, 'select status, result from approvals where id = $1', [ap.id]))[0]).toEqual({ status: 'sent', result: 'HTTP 201' })
+
+    // a key made read only, or removed, after the request was asked: nothing runs
+    const [later] = await as(aliceApp, `select * from request_action('pay', 'POST', '/v1/refunds')`)
+    await as(alice, `select decide_approval($1, 'approved')`, [later.id])
+    await put(alice, 'pay', meta({ writes: 'never' }))
+    await fails(as(server, 'select send_claim($1, $2)', [ALICE, later.id]), /now read only/)
+    await fails(as(aliceApp, `select remove_secret('api', 'pay')`), /assistant cannot/)
+    expect((await as(alice, `select remove_secret('api', 'pay') as ok`))[0].ok).toBe(true)
+    await fails(as(server, 'select send_claim($1, $2)', [ALICE, later.id]), /saved key was removed/)
+    expect((await pg.query<{ ciphertext: string }>(`select ciphertext from secrets where user_id = $1 and name = 'pay'`, [ALICE])).rows.every((r) => r.ciphertext === '')).toBe(true)
+  })
+
+  test('at most 20 keys', async () => {
+    for (let i = 0; i < 20; i++) await as(bob, 'select put_secret($1, $2::jsonb, $3, $4)', ['api', meta(), sealedKey(BOB, `k${i}`), `k${i}`])
+    await fails(as(bob, 'select put_secret($1, $2::jsonb, $3, $4)', ['api', meta(), sealedKey(BOB, 'one-more'), 'one-more']), /at most 20/)
+  })
+})
+
+describe('stand-ins for contact details', () => {
+  const server: Who = { role: 'service_role' }
+  const mask = async (user: string, emails: string[], phones: string[], source: string): Promise<{ level: string; email: Record<string, number>; phone: Record<string, number> }> =>
+    (await as(server, 'select handles_mask($1, $2::text[], $3::text[], $4) as m', [user, emails, phones, source]))[0].m as { level: string; email: Record<string, number>; phone: Record<string, number> }
+
+  test('values from a service get numbers that stay the same', async () => {
+    const first = await mask(ALICE, ['b@example.com', 'a@example.com', 'a@example.com'], ['+919876543210'], 'api')
+    expect(first).toEqual({ level: 'api', email: { 'a@example.com': 1, 'b@example.com': 2 }, phone: { '+919876543210': 1 } })
+    const again = await mask(ALICE, ['c@example.com', 'a@example.com'], [], 'api')
+    expect(again.email).toEqual({ 'a@example.com': 1, 'c@example.com': 3 })
+  })
+
+  test('the person\'s own data only reuses numbers, unless they chose to hide everything', async () => {
+    expect((await mask(ALICE, ['a@example.com', 'new@example.com'], ['9000000001'], 'own'))).toEqual({ level: 'api', email: { 'a@example.com': 1 }, phone: {} })
+    await as(alice, `insert into profiles (mask_level) values ('all') on conflict (user_id) do update set mask_level = 'all'`)
+    expect((await mask(ALICE, ['new@example.com'], ['9000000001'], 'own'))).toEqual({ level: 'all', email: { 'new@example.com': 4 }, phone: { '9000000001': 2 } })
+    await as(alice, `update profiles set mask_level = 'off'`)
+    expect(await mask(ALICE, ['a@example.com'], [], 'api')).toEqual({ level: 'off', email: {}, phone: {} })
+    await as(alice, `update profiles set mask_level = 'api'`)
+  })
+
+  test('numbers are per person', async () => {
+    expect((await mask(BOB, ['a@example.com'], [], 'api')).email).toEqual({ 'a@example.com': 1 })
+    const back = (await as(server, 'select handles_resolve($1, $2::int[], $3::int[]) as r', [BOB, [1, 2, 3], [1]]))[0].r
+    expect(back).toEqual({ email: { '1': 'a@example.com' }, phone: {} })
+  })
+
+  test('only the server turns a stand-in back into a value; an app cannot even read the table', async () => {
+    const back = (await as(server, 'select handles_resolve($1, $2::int[], $3::int[]) as r', [ALICE, [1, 3, 99], [1]]))[0].r
+    expect(back).toEqual({ email: { '1': 'a@example.com', '3': 'c@example.com' }, phone: { '1': '+919876543210' } })
+    await fails(as(aliceApp, 'select handles_resolve($1, $2::int[], $3::int[])', [ALICE, [1], []]), /permission denied/)
+    await fails(as(alice, 'select handles_resolve($1, $2::int[], $3::int[])', [ALICE, [1], []]), /permission denied/)
+    await fails(as(aliceApp, 'select handles_mask($1, $2::text[], $3::text[], $4)', [ALICE, ['a@example.com'], [], 'api']), /permission denied/)
+    expect(await as(aliceApp, 'select value from handles')).toEqual([])
+    expect(await as(bob, `select value from handles where value = 'c@example.com'`)).toEqual([])
+    // the person, on the site, can look one up
+    expect(await as(alice, `select value from handles where kind = 'email' and n = 3`)).toEqual([{ value: 'c@example.com' }])
+    await fails(as(alice, `update handles set value = 'x@example.com'`), /permission denied/)
+    await fails(as(alice, `insert into handles (user_id, kind, n, value) values ('${ALICE}', 'email', 50, 'x@example.com')`), /permission denied/)
+  })
+
+  test('an assistant cannot switch masking off', async () => {
+    await fails(as(aliceApp, `update profiles set mask_level = 'off'`), /Only the person can change privacy/)
+    await as(aliceApp, `update profiles set timezone = 'Europe/London'`)
+    expect((await as(alice, 'select mask_level, timezone from profiles'))[0]).toEqual({ mask_level: 'api', timezone: 'Europe/London' })
+    // a profile first created by an app starts with masking on, whatever it asks for
+    await pg.query('update profiles set deleted_at = null where user_id = $1', [BOB])
+    await pg.query('delete from profiles where user_id = $1', [BOB])
+    await as({ sub: BOB, clientId: APP }, `insert into profiles (mask_level) values ('off')`)
+    expect((await as(bob, 'select mask_level from profiles'))[0].mask_level).toBe('api')
   })
 })
 
@@ -464,9 +624,9 @@ describe('code and schema agree', () => {
   })
 
   test('every database function the code calls exists with those argument names', async () => {
-    const src = ['store.ts', 'channel-db.ts', 'send-db.ts'].map((f) => readFileSync(join(import.meta.dir, '..', 'lib', f), 'utf8')).join('\n')
+    const src = ['store.ts', 'channel-db.ts', 'send-db.ts', 'mask-db.ts'].map((f) => readFileSync(join(import.meta.dir, '..', 'lib', f), 'utf8')).join('\n')
     const calls = [...src.matchAll(/\.rpc\('([a-z_]+)',\s*\{([^}]*)\}/g)]
-    expect(calls.length).toBeGreaterThanOrEqual(15)
+    expect(calls.length).toBeGreaterThanOrEqual(22)
     for (const [, name, body] of calls) {
       const used = [...body.matchAll(/(p_[a-z_]+):/g)].map((m) => m[1])
       const fn = (await pg.query<{ args: string[] }>(
@@ -481,7 +641,7 @@ describe('code and schema agree', () => {
     const tables = (await pg.query<{ relname: string; relrowsecurity: boolean }>(
       `select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r'`,
     )).rows
-    expect(tables.length).toBe(11)
+    expect(tables.length).toBe(12)
     for (const t of tables) expect(t.relrowsecurity, t.relname).toBe(true)
     const deletes = (await pg.query(`select 1 from pg_policies where schemaname = 'public' and cmd in ('DELETE', 'ALL')`)).rows
     expect(deletes).toEqual([])

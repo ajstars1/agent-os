@@ -2,7 +2,7 @@
 // database. The webhook route wires the real ones.
 import { agendaWindow, buildAgenda, formatAgenda } from './agenda'
 import type { Snapshot } from './channel-db'
-import type { SendOutcome } from './sender'
+import { SELF_SENT, type SendOutcome } from './sender'
 import { draftButtons, draftText, parseButton, parseText, type Button, type Update } from './telegram'
 import { DAY_MS, DEFAULT_TZ, isValidTimeZone } from './time'
 import type { Approval } from './types'
@@ -42,7 +42,8 @@ const reason = (e: unknown): string => {
 
 const decidedLine = (a: Pick<Approval, 'id' | 'status'>, sent?: SendOutcome): string => {
   if (a.status !== 'approved') return `❌ Draft #${a.id} rejected. It will not be sent.`
-  if (sent?.kind === 'sent') return `✅ Draft #${a.id} approved and sent to ${sent.to}.`
+  if (sent?.kind === 'sent') return sent.api ? `✅ Draft #${a.id} approved and run: ${sent.to}.` : `✅ Draft #${a.id} approved and sent to ${sent.to}.`
+  if (sent?.kind === 'refused') return `⚠️ Draft #${a.id} approved and run, but ${sent.reason}. It is not retried.`
   if (sent?.kind === 'not_sent') return `✅ Draft #${a.id} approved, but not sent: ${sent.reason}. It is still approved.`
   if (sent?.kind === 'unknown') return `⚠️ Draft #${a.id} approved, but it may not have been sent: ${sent.reason}.`
   return `✅ Draft #${a.id} approved. Your assistant sends it the next time it checks your drafts.`
@@ -50,7 +51,7 @@ const decidedLine = (a: Pick<Approval, 'id' | 'status'>, sent?: SendOutcome): st
 
 // After a yes: aos sends an email draft itself when it can. Any failure here leaves the draft approved.
 const afterYes = async (d: BotDeps, chatId: string, a: Approval): Promise<SendOutcome | undefined> => {
-  if (a.status !== 'approved' || a.channel !== 'email') return undefined
+  if (a.status !== 'approved' || !SELF_SENT.has(a.channel)) return undefined
   return d.autoSend(chatId, a.id).catch((): SendOutcome => ({ kind: 'not_sent', reason: 'something went wrong. Try again in a minute' }))
 }
 
