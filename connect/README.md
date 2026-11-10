@@ -90,6 +90,8 @@ Setup:
 
 Until the token is set, `/api/telegram` answers 503 and `/app` hides the Connect Telegram button.
 
+**Live since 10 Nov 2026:** bot @aos_connect_bot (name "aos"), webhook `https://aos-connect.vercel.app/api/telegram` with only `message` and `callback_query` updates. Checked from Telegram: `/start` and `/today` from an unlinked chat answer with how to link (the second goes through the database with the secret key).
+
 ## Run locally
 
 `cp .env.example .env.local`, fill it in, then `npm run dev`. `npm run build` works without the variables; requests then answer that the server is not configured.
