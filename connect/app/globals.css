@@ -1,0 +1,54 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+
+  /* surfaces: blue-slate ink, three depths (same family as the personal aos dashboard) */
+  --color-ground: #12161d;
+  --color-raised: #1a1f28;
+  --color-lift: #222936;
+  --color-line: #2b3341;
+
+  /* text */
+  --color-ink: #ece9e2;
+  --color-dim: #a5abb6;
+  --color-faint: #737c8b;
+
+  /* states (always paired with a word) */
+  --color-late: #ef6b63;
+  --color-wait: #fab219;
+  --color-good: #4cc26a;
+  --color-busy: #6da7ec;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background: var(--color-ground);
+}
+
+body {
+  background: var(--color-ground);
+  color: var(--color-ink);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
