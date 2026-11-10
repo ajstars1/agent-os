@@ -38,8 +38,8 @@ export const draftButtons = (id: number): Button[][] => [
   ],
 ]
 
-export const draftText = (a: Pick<Approval, 'id' | 'channel' | 'recipient' | 'draft'>): string =>
-  `Draft #${a.id} · ${a.channel}${a.recipient ? ` to ${a.recipient}` : ''}\n\n${clip(a.draft, 3500)}`
+export const draftText = (a: Pick<Approval, 'id' | 'channel' | 'recipient' | 'draft'> & { subject?: string | null }): string =>
+  `Draft #${a.id} · ${a.channel}${a.recipient ? ` to ${a.recipient}` : ''}${a.subject ? `\nSubject: ${a.subject}` : ''}\n\n${clip(a.draft, 3500)}`
 
 // Constant-time check of the secret Telegram sends back with every update.
 export const sameSecret = (given: string | null, expected: string): boolean => {

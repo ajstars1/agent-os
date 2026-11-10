@@ -12,6 +12,7 @@ import {
   deleteTask,
   dropGoal,
   getTimeZone,
+  connectionStatus,
   listApprovals,
   listGoals,
   listTasks,
@@ -25,7 +26,9 @@ import {
   updateTask,
   withinRate,
 } from './store'
+import { unsendable } from './mail'
 import { notifyDraft } from './notify'
+import { outcomeLine, sendForUser } from './sender'
 import { userClient } from './supabase'
 
 // Calls per user per minute, across all tools.
@@ -41,6 +44,10 @@ const OWNER = z.enum(['me', 'assistant']).describe('"me" = the person does it, "
 const STATUS = z.enum(['todo', 'doing', 'waiting_approval', 'done', 'skipped'])
 const ID = z.number().int().positive()
 
+export interface Caller {
+  userId: string | null
+}
+
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
 
 const HIDDEN = new Set(['user_id', 'deleted_at'])
@@ -54,20 +61,23 @@ const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text:
 // Builds the caller's client from the verified token on the request, applies the rate limit, runs the tool and
 // turns any error into a tool error the assistant can read.
 export const run =
-  <A>(fn: (sb: SupabaseClient, args: A) => Promise<unknown>, client: (token: string) => SupabaseClient = userClient) =>
+  <A>(fn: (sb: SupabaseClient, args: A, who: Caller) => Promise<unknown>, client: (token: string) => SupabaseClient = userClient) =>
   async (args: A, ctx: ServerContext): Promise<ToolResult> => {
     const token = ctx.http?.authInfo?.token
     if (!token) return fail('Not signed in')
+    // set by the MCP route from the verified token, never from tool input
+    const userId = ctx.http?.authInfo?.extra?.userId
     try {
       const sb = client(token)
       if (!(await withinRate(sb, 'mcp', RATE_LIMIT, RATE_WINDOW_S))) return fail('Too many requests. Wait a minute and try again.')
-      return ok(await fn(sb, args))
+      return ok(await fn(sb, args, { userId: typeof userId === 'string' ? userId : null }))
     } catch (e) {
       return fail(e instanceof Error ? e.message : 'unknown')
     }
   }
 
 const READ = { readOnlyHint: true }
+const SEND = { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
 const WRITE = { readOnlyHint: false, destructiveHint: false }
 
 const taskFields = {
@@ -169,19 +179,30 @@ export const registerTools = (server: McpServer): void => {
         'Before you send, post or publish ANYTHING on the person\'s behalf (email, message, comment, post), put the exact ' +
         'text here instead of sending it. One call per message. The person approves or rejects it on the aos site; you ' +
         'cannot approve it yourself. Then tell them a draft is waiting (phone_pinged = true means their phone already got it ' +
-        'with Approve and Reject buttons).',
+        'with Approve and Reject buttons). For an email use channel "email", one address as recipient and a subject: when ' +
+        'aos_sends_on_approval is true, aos sends it from their own mailbox the moment they approve, and you send nothing.',
       inputSchema: z.object({
         channel: z.string().regex(/^[a-z0-9_-]{1,60}$/).describe('Where it would go, e.g. email, whatsapp, linkedin-post, sms'),
         recipient: z.string().max(200).optional().describe('Who it goes to (name, address or handle)'),
+        subject: z.string().min(1).max(300).regex(/^[^\r\n]+$/).optional().describe('Subject line, for an email'),
         draft: z.string().min(1).max(5000).describe('The exact text to send, word for word'),
         task_id: ID.optional().describe('The task this draft belongs to; it waits until the person decides'),
         send_after: ISO.optional().describe('Earliest time it may go out'),
       }),
       annotations: WRITE,
     },
-    run(async (sb, a: { channel: string; draft: string; recipient?: string; task_id?: number; send_after?: string }) => {
+    run(async (sb, a: { channel: string; draft: string; recipient?: string; subject?: string; task_id?: number; send_after?: string }) => {
       const approval = await requestApproval(sb, a)
-      return { ...approval, phone_pinged: await notifyDraft(sb, approval) }
+      const phone_pinged = await notifyDraft(sb, approval)
+      if (approval.channel !== 'email') return { ...approval, phone_pinged }
+      const connected = (await connectionStatus(sb).catch(() => null))?.email.connected === true
+      const problem = unsendable(approval)
+      return {
+        ...approval,
+        phone_pinged,
+        aos_sends_on_approval: connected && !problem,
+        ...(connected && problem ? { aos_cannot_send_because: problem } : {}),
+      }
     }),
   )
 
@@ -196,6 +217,23 @@ export const registerTools = (server: McpServer): void => {
       annotations: READ,
     },
     run(async (sb, { status }: { status?: 'pending' | 'approved' | 'rejected' | 'sent' | 'failed' }) => listApprovals(sb, status)),
+  )
+
+  server.registerTool(
+    'approval_send',
+    {
+      title: 'Have aos send an approved email',
+      description:
+        'Sends one approved email draft from the person\'s own mailbox, word for word, using the mail login they saved on the ' +
+        'aos site (you never see it). Use it for approved email drafts that are still waiting, e.g. scheduled ones. If it ' +
+        'answers that there is no email connection, send the draft yourself and call approval_mark_sent.',
+      inputSchema: z.object({ id: ID }),
+      annotations: SEND,
+    },
+    run(async (_sb, { id }: { id: number }, who) => {
+      if (!who.userId) throw new Error('Not signed in')
+      return outcomeLine(id, await sendForUser(who.userId, id))
+    }),
   )
 
   server.registerTool(
@@ -310,12 +348,16 @@ export const registerTools = (server: McpServer): void => {
     'settings',
     {
       title: 'Settings',
-      description: "Read or set the person's time zone (IANA name, e.g. Asia/Kolkata) and display name. Ask them before changing it.",
+      description:
+        "Read or set the person's time zone (IANA name, e.g. Asia/Kolkata) and display name. Ask them before changing it. " +
+        'Reading also shows whether aos can send email for them. Logins and keys are never set here: the person adds them on the aos site.',
       inputSchema: z.object({ timezone: z.string().max(64).optional(), display_name: z.string().max(80).optional() }),
       annotations: WRITE,
     },
     run(async (sb, patch: { timezone?: string; display_name?: string }) =>
-      patch.timezone === undefined && patch.display_name === undefined ? { timezone: await getTimeZone(sb) } : setProfile(sb, patch),
+      patch.timezone === undefined && patch.display_name === undefined
+        ? { timezone: await getTimeZone(sb), connections: await connectionStatus(sb) }
+        : setProfile(sb, patch),
     ),
   )
 }

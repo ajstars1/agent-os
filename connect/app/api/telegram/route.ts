@@ -2,9 +2,11 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { handleUpdate } from '../../../lib/bot'
 import { claimLink, decideFromChat, snapshot } from '../../../lib/channel-db'
 import { channelEnv, env } from '../../../lib/env'
+import { sendFromChat } from '../../../lib/sender'
 import { callTelegram, clip, sameSecret, sendText, updateSchema } from '../../../lib/telegram'
 
 export const dynamic = 'force-dynamic'
+export const maxDuration = 60
 
 // Telegram posts every message and button press here. Only Telegram knows the webhook secret, so anything without
 // it is refused. A valid update always gets 200, even when handling it failed, so Telegram does not resend it.
@@ -38,6 +40,7 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
       claim: claimLink,
       snapshot,
       decide: decideFromChat,
+      autoSend: sendFromChat,
     })
   } catch {
     // swallowed on purpose: see above

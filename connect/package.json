@@ -16,6 +16,7 @@
     "@supabase/supabase-js": "^2.118.0",
     "mcp-handler": "^2.3.0",
     "next": "^15.5.28",
+    "nodemailer": "^7.0.13",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "zod": "^4.6.7"
@@ -25,8 +26,11 @@
     "@tailwindcss/postcss": "^4.3.3",
     "@types/bun": "^1.4.4",
     "@types/node": "^26.6.5",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19.3.0",
+    "@types/smtp-server": "^3.5.13",
     "postcss": "^8.5.32",
+    "smtp-server": "^3.21.4",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3"
   }

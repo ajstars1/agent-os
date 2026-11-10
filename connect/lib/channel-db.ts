@@ -1,23 +1,9 @@
-// The bot's only way into the database. It holds the secret key, so it exposes exactly three calls, each a database
+// The bot's only way into the database. It uses the secret key, so it exposes exactly three calls, each a database
 // function that finds the user from the linked chat and touches that user's rows only (see the phone migration).
-// Nothing else in the app may import the secret key.
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { channelEnv, env } from './env'
+import { secretClient as db } from './secret-client'
 import type { Approval, CalendarEvent, Goal, Task } from './types'
 
 const CHANNEL = 'telegram'
-
-let client: SupabaseClient | null = null
-
-const db = (): SupabaseClient => {
-  if (client) return client
-  const { secretKey } = channelEnv()
-  if (!secretKey) throw new Error('SUPABASE_SECRET_KEY is not set')
-  client = createClient(env().supabaseUrl, secretKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-  })
-  return client
-}
 
 export interface Snapshot {
   timezone: string | null

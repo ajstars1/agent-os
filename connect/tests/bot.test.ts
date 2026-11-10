@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { handleUpdate, type BotDeps } from '../lib/bot'
 import type { Snapshot } from '../lib/channel-db'
+import type { SendOutcome } from '../lib/sender'
 import { parseButton, parseText, sameSecret, type Button, type Update } from '../lib/telegram'
 import type { Approval } from '../lib/types'
 
@@ -12,6 +13,7 @@ const draft = (id: number, over: Partial<Approval> = {}): Approval => ({
   task_id: null,
   channel: 'email',
   recipient: 'priya@example.com',
+  subject: 'Hello',
   draft: `Hello, draft ${id}`,
   status: 'pending',
   result: null,
@@ -27,7 +29,8 @@ interface Sent {
   buttons?: Button[][]
 }
 
-const harness = (snap: Snapshot | null, opts: { claim?: boolean; decideError?: string } = {}) => {
+const harness = (snap: Snapshot | null, opts: { claim?: boolean; decideError?: string; channel?: string; sent?: SendOutcome } = {}) => {
+  const autoSent: Array<[string, number]> = []
   const sent: Sent[] = []
   const edits: string[] = []
   const answers: string[] = []
@@ -49,10 +52,14 @@ const harness = (snap: Snapshot | null, opts: { claim?: boolean; decideError?: s
     decide: async (chatId, id, decision) => {
       if (opts.decideError) throw new Error(opts.decideError)
       decided.push([chatId, id, decision])
-      return draft(id, { status: decision })
+      return draft(id, { status: decision, channel: opts.channel ?? 'email' })
+    },
+    autoSend: async (chatId, id) => {
+      autoSent.push([chatId, id])
+      return opts.sent ?? { kind: 'skipped', reason: 'no email connection' }
     },
   }
-  return { deps, sent, edits, answers, decided }
+  return { deps, sent, edits, answers, decided, autoSent }
 }
 
 const msg = (text: string, type = 'private'): Update => ({
@@ -147,6 +154,35 @@ describe('the bot', () => {
     expect(h.decided).toEqual([[String(CHAT), 5, 'approved']])
     expect(h.answers).toEqual(['Approved'])
     expect(h.edits[0]).toContain('approved')
+  })
+
+  test('a yes on an email sends it when a mailbox is connected, and says so', async () => {
+    const h = harness(SNAP, { sent: { kind: 'sent', to: 'priya@example.com' } })
+    await handleUpdate(button('a:5'), h.deps)
+    expect(h.autoSent).toEqual([[String(CHAT), 5]])
+    expect(h.edits[0]).toContain('approved and sent to priya@example.com')
+  })
+
+  test('a yes with no mailbox connected keeps the old wording', async () => {
+    const h = harness(SNAP)
+    await handleUpdate(msg('yes 5'), h.deps)
+    expect(h.sent[0].text).toContain('Your assistant sends it')
+  })
+
+  test('a failed send says the draft is still approved', async () => {
+    const h = harness(SNAP, { sent: { kind: 'not_sent', reason: 'your mail provider refused the login' } })
+    await handleUpdate(msg('yes 5'), h.deps)
+    expect(h.sent[0].text).toContain('not sent: your mail provider refused the login')
+    expect(h.sent[0].text).toContain('still approved')
+  })
+
+  test('a no, or a yes on something that is not an email, never sends', async () => {
+    const no = harness(SNAP, { sent: { kind: 'sent', to: 'x@example.com' } })
+    await handleUpdate(button('r:5'), no.deps)
+    expect(no.autoSent).toEqual([])
+    const post = harness(SNAP, { channel: 'linkedin-post', sent: { kind: 'sent', to: 'x@example.com' } })
+    await handleUpdate(button('a:5'), post.deps)
+    expect(post.autoSent).toEqual([])
   })
 
   test('"no 6" rejects', async () => {

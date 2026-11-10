@@ -23,6 +23,7 @@ export interface Approval {
   task_id: number | null
   channel: string
   recipient: string | null
+  subject: string | null
   draft: string
   status: ApprovalStatus
   result: string | null
@@ -66,7 +67,7 @@ export interface ActivityRow {
 
 // Columns sent to clients. user_id and deleted_at stay in the database.
 export const TASK_COLS = 'id,title,area,owner,status,due_at,recur,notes,goal_id,parent_id,created_at,updated_at'
-export const APPROVAL_COLS = 'id,task_id,channel,recipient,draft,status,result,send_after,created_at,decided_at'
+export const APPROVAL_COLS = 'id,task_id,channel,recipient,subject,draft,status,result,send_after,created_at,decided_at'
 export const GOAL_COLS = 'id,title,area,unit,target,current,due_at,status,created_at'
 export const EVENT_COLS = 'id,title,area,starts_at,ends_at,location,notes'
 export const ACTIVITY_COLS = 'id,at,area,channel,account,action,result,task_id'

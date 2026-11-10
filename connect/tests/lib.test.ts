@@ -117,7 +117,7 @@ describe('agenda', () => {
 
   test('formatted agenda names what needs the person and how goals stand', () => {
     const approval: Approval = {
-      id: 7, task_id: null, channel: 'email', recipient: 'client@example.com', draft: 'Hello, the quote is attached.',
+      id: 7, task_id: null, channel: 'email', recipient: 'client@example.com', subject: null, draft: 'Hello, the quote is attached.',
       status: 'pending', result: null, send_after: null, created_at: '2026-11-10T05:00:00Z', decided_at: null,
     }
     const a = buildAgenda(

@@ -4,6 +4,8 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
+import { randomBytes } from 'node:crypto'
+import { binding, seal } from '../lib/vault'
 import { ACTIVITY_COLS, APPROVAL_COLS, EVENT_COLS, GOAL_COLS, TASK_COLS } from '../lib/types'
 
 const ALICE = '11111111-1111-4111-8111-111111111111'
@@ -316,6 +318,140 @@ describe('the phone channel', () => {
   })
 })
 
+describe('the vault and the sealed send', () => {
+  const server: Who = { role: 'service_role' }
+  const sealed = seal(randomBytes(32), 'app-password-SECRET', binding(ALICE, 'smtp'))
+  const META = JSON.stringify({ provider: 'gmail', username: 'alice@example.com', from_name: 'Alice' })
+  const newEmail = async (who: Who, extra = ''): Promise<number> =>
+    Number((await as(who, `select (request_approval('email', 'Approved words.', 'Priya <priya@example.com>', null, ${extra || 'null'}, 'Quote')).id as id`))[0].id)
+  const claim = (user: string, id: number): Promise<Row[]> => as(server, 'select send_claim($1, $2) as c', [user, id])
+
+  test('an assistant cannot change a draft after asking; the person can', async () => {
+    const id = await newEmail(aliceApp)
+    await fails(as(aliceApp, `update approvals set draft = 'swapped before the yes' where id = $1`, [id]), /cannot change a draft after asking/)
+    await fails(as(aliceApp, `update approvals set recipient = 'thief@example.com' where id = $1`, [id]), /cannot change a draft after asking/)
+    await fails(as(aliceApp, `update approvals set subject = 'Other' where id = $1`, [id]), /cannot change a draft after asking/)
+    await as(alice, `select decide_approval($1, 'approved', 'Edited by Alice.')`, [id])
+    expect((await as(alice, 'select draft, status from approvals where id = $1', [id]))[0]).toEqual({ draft: 'Edited by Alice.', status: 'approved' })
+    await fails(as(alice, `update approvals set subject = 'Late change' where id = $1`, [id]), /Only a pending draft/)
+  })
+
+  test('a subject cannot carry a line break', async () => {
+    await fails(as(alice, `insert into approvals (channel, draft, subject) values ('email', 'x', E'Hi\nBcc: x@evil.test')`), /check constraint/)
+  })
+
+  test('only the person can save or remove a login, and nobody can read it back', async () => {
+    await fails(as(aliceApp, 'select put_secret($1, $2::jsonb, $3)', ['smtp', META, sealed]), /assistant cannot/)
+    await fails(as({ role: 'anon' }, 'select put_secret($1, $2::jsonb, $3)', ['smtp', META, sealed]), /permission denied/)
+    await fails(as(alice, 'select put_secret($1, $2::jsonb, $3)', ['smtp', META, 'plain text password']), /check constraint/)
+    await fails(as(alice, 'select put_secret($1, $2::jsonb, $3)', ['ftp', META, sealed]), /check constraint/)
+    await as(alice, 'select put_secret($1, $2::jsonb, $3)', ['smtp', META, sealed])
+    await as(alice, 'select put_secret($1, $2::jsonb, $3)', ['smtp', META, sealed]) // replacing keeps one row
+    expect((await as(alice, `select kind, meta ->> 'username' as username from secrets where deleted_at is null`))).toEqual([{ kind: 'smtp', username: 'alice@example.com' }])
+    await fails(as(alice, 'select ciphertext from secrets'), /permission denied/)
+    await fails(as(alice, 'select * from secrets'), /permission denied/)
+    await fails(as(alice, `update secrets set meta = '{}'`), /permission denied/)
+    await fails(as(alice, `insert into secrets (user_id, kind, ciphertext) values ('${ALICE}', 'smtp', '')`), /permission denied/)
+    expect(await as(aliceApp, 'select id from secrets')).toEqual([])
+    expect(await as(bob, 'select id from secrets')).toEqual([])
+    await fails(as(aliceApp, `select remove_secret('smtp')`), /assistant cannot/)
+  })
+
+  test('an assistant learns only that email is connected, with a hint of the address', async () => {
+    expect((await as(aliceApp, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: true, address_hint: 'a***@example.com' } })
+    expect((await as(bob, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: false } })
+  })
+
+  test('users and apps cannot call the send functions or claim a send by hand', async () => {
+    const id = await newEmail(aliceApp)
+    await as(alice, `select decide_approval($1, 'approved')`, [id])
+    await fails(as(alice, 'select send_claim($1, $2)', [ALICE, id]), /permission denied/)
+    await fails(as(aliceApp, 'select send_claim($1, $2)', [ALICE, id]), /permission denied/)
+    await fails(as(aliceApp, `select send_finish($1, $2, 'sent', 'x')`, [ALICE, id]), /permission denied/)
+    await fails(as(alice, `select channel_send_claim('telegram', '700100', $1)`, [id]), /permission denied/)
+    await fails(as(aliceApp, 'update approvals set send_claimed_at = now() where id = $1', [id]), /Only the aos server/)
+    await fails(as(alice, 'update approvals set send_claimed_at = now() where id = $1', [id]), /Only the aos server/)
+  })
+
+  test('only an approved, due email of that user can be claimed, and only once', async () => {
+    const pending = await newEmail(aliceApp)
+    await fails(claim(ALICE, pending), /it is pending, not approved/)
+    const [post] = await as(aliceApp, `select (request_approval('linkedin-post', 'A post')).id as id`)
+    await as(alice, `select decide_approval($1, 'approved')`, [post.id])
+    await fails(claim(ALICE, Number(post.id)), /it is not an email/)
+    const later = await newEmail(aliceApp, `now() + interval '1 day'`)
+    await as(alice, `select decide_approval($1, 'approved')`, [later])
+    await fails(claim(ALICE, later), /scheduled for later/)
+
+    const id = await newEmail(aliceApp)
+    await as(alice, `select decide_approval($1, 'approved')`, [id])
+    await fails(claim(BOB, id), /not found/)
+    const got = (await claim(ALICE, id))[0].c as { user_id: string; approval: Row; meta: Row; ciphertext: string }
+    expect(got.user_id).toBe(ALICE)
+    expect(got.ciphertext).toBe(sealed)
+    expect(got.meta.username).toBe('alice@example.com')
+    expect([got.approval.draft, got.approval.subject, got.approval.recipient]).toEqual(['Approved words.', 'Quote', 'Priya <priya@example.com>'])
+    await fails(claim(ALICE, id), /already being sent/)
+
+    // a send that certainly did not go out is released and can be claimed again
+    await as(server, `select send_finish($1, $2, 'retry', 'Not sent: login refused.')`, [ALICE, id])
+    expect((await as(alice, 'select status, result from approvals where id = $1', [id]))[0]).toEqual({ status: 'approved', result: 'Not sent: login refused.' })
+    await claim(ALICE, id)
+    await as(server, `select send_finish($1, $2, 'sent', 'Sent by aos')`, [ALICE, id])
+    expect((await as(alice, 'select status from approvals where id = $1', [id]))[0].status).toBe('sent')
+    await fails(claim(ALICE, id), /it is sent, not approved/)
+    await fails(as(server, `select send_finish($1, $2, 'sent', 'again')`, [ALICE, id]), /is not being sent/)
+    const log = await as(alice, `select channel, account, action from activity where action = 'sent by aos (approval ${id})'`)
+    expect(log).toEqual([{ channel: 'email', account: 'Priya <priya@example.com>', action: `sent by aos (approval ${id})` }])
+    expect(await as(bob, `select id from activity where action like 'sent by aos%'`)).toEqual([])
+  })
+
+  test('a sent email closes its task; a stale claim frees itself', async () => {
+    const [t] = await as(alice, `insert into tasks (title) values ('Send the quote') returning id`)
+    const [ap] = await as(aliceApp, `select (request_approval('email', 'Body', 'priya@example.com', $1, null, 'Quote')).id as id`, [t.id])
+    await as(alice, `select decide_approval($1, 'approved')`, [ap.id])
+    await claim(ALICE, Number(ap.id))
+    await pg.query(`update approvals set send_claimed_at = now() - interval '6 minutes' where id = $1`, [ap.id])
+    await claim(ALICE, Number(ap.id))
+    await as(server, `select send_finish($1, $2, 'sent', 'ok')`, [ALICE, ap.id])
+    expect((await as(alice, 'select status from tasks where id = $1', [t.id]))[0].status).toBe('done')
+  })
+
+  test('a yes from the linked chat can claim only that person\'s email', async () => {
+    const code = String((await as(alice, `select create_link_code('telegram') as c`))[0].c)
+    await as(server, `select channel_claim('telegram', $1, '800200', null)`, [code])
+    const id = await newEmail(aliceApp)
+    await as(server, `select channel_decide('telegram', '800200', $1, 'approved')`, [id])
+    await fails(as(server, `select channel_send_claim('telegram', '999', $1)`, [id]), /not linked/)
+    const got = (await as(server, `select channel_send_claim('telegram', '800200', $1) as c`, [id]))[0].c as { user_id: string }
+    expect(got.user_id).toBe(ALICE)
+    await as(server, `select send_finish($1, $2, 'failed', 'May not have been sent')`, [ALICE, id])
+    expect((await as(alice, 'select status from approvals where id = $1', [id]))[0].status).toBe('failed')
+  })
+
+  test('no more than 50 emails a day', async () => {
+    await pg.query(
+      `insert into approvals (user_id, channel, draft, recipient, subject) select $1, 'email', 'x', 'p@example.com', 's' from generate_series(1, 50)`, [ALICE],
+    )
+    await pg.query(`update approvals set status = 'approved' where user_id = $1 and draft = 'x'`, [ALICE])
+    await pg.query(`update approvals set send_claimed_at = now(), status = 'sent' where user_id = $1 and draft = 'x'`, [ALICE])
+    const id = await newEmail(aliceApp)
+    await as(alice, `select decide_approval($1, 'approved')`, [id])
+    await fails(claim(ALICE, id), /limit of 50 emails a day/)
+  })
+
+  test('removing a login erases it; sends then find no connection', async () => {
+    expect((await as(alice, `select remove_secret('smtp') as ok`))[0].ok).toBe(true)
+    const rows = (await pg.query<{ ciphertext: string; gone: boolean }>(`select ciphertext, deleted_at is not null as gone from secrets where user_id = $1`, [ALICE])).rows
+    expect(rows).toEqual([{ ciphertext: '', gone: true }])
+    expect((await as(aliceApp, 'select connection_status() as s'))[0].s).toEqual({ email: { connected: false } })
+    await pg.query(`update approvals set send_claimed_at = null where user_id = $1 and draft = 'x'`, [ALICE])
+    const id = await newEmail(aliceApp)
+    await as(alice, `select decide_approval($1, 'approved')`, [id])
+    await fails(claim(ALICE, id), /no email connection/)
+  })
+})
+
 describe('code and schema agree', () => {
   test('every column the code selects exists', async () => {
     const lists: Record<string, string> = { tasks: TASK_COLS, approvals: APPROVAL_COLS, goals: GOAL_COLS, events: EVENT_COLS, activity: ACTIVITY_COLS }
@@ -328,9 +464,9 @@ describe('code and schema agree', () => {
   })
 
   test('every database function the code calls exists with those argument names', async () => {
-    const src = ['store.ts', 'channel-db.ts'].map((f) => readFileSync(join(import.meta.dir, '..', 'lib', f), 'utf8')).join('\n')
+    const src = ['store.ts', 'channel-db.ts', 'send-db.ts'].map((f) => readFileSync(join(import.meta.dir, '..', 'lib', f), 'utf8')).join('\n')
     const calls = [...src.matchAll(/\.rpc\('([a-z_]+)',\s*\{([^}]*)\}/g)]
-    expect(calls.length).toBeGreaterThanOrEqual(9)
+    expect(calls.length).toBeGreaterThanOrEqual(15)
     for (const [, name, body] of calls) {
       const used = [...body.matchAll(/(p_[a-z_]+):/g)].map((m) => m[1])
       const fn = (await pg.query<{ args: string[] }>(
@@ -345,7 +481,7 @@ describe('code and schema agree', () => {
     const tables = (await pg.query<{ relname: string; relrowsecurity: boolean }>(
       `select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r'`,
     )).rows
-    expect(tables.length).toBe(10)
+    expect(tables.length).toBe(11)
     for (const t of tables) expect(t.relrowsecurity, t.relname).toBe(true)
     const deletes = (await pg.query(`select 1 from pg_policies where schemaname = 'public' and cmd in ('DELETE', 'ALL')`)).rows
     expect(deletes).toEqual([])

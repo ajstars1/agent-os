@@ -2,6 +2,7 @@
 // database. The webhook route wires the real ones.
 import { agendaWindow, buildAgenda, formatAgenda } from './agenda'
 import type { Snapshot } from './channel-db'
+import type { SendOutcome } from './sender'
 import { draftButtons, draftText, parseButton, parseText, type Button, type Update } from './telegram'
 import { DAY_MS, DEFAULT_TZ, isValidTimeZone } from './time'
 import type { Approval } from './types'
@@ -15,6 +16,8 @@ export interface BotDeps {
   claim: (chatId: string, code: string, label: string | null) => Promise<boolean>
   snapshot: (chatId: string, from: Date, to: Date) => Promise<Snapshot | null>
   decide: (chatId: string, id: number, decision: 'approved' | 'rejected') => Promise<Approval>
+  // sends an approved email with the person's own mail login, when they connected one
+  autoSend: (chatId: string, id: number) => Promise<SendOutcome>
 }
 
 const MAX_DRAFTS = 10
@@ -37,10 +40,19 @@ const reason = (e: unknown): string => {
   return SAFE_ERROR.test(m) ? m : 'Something went wrong. Try again in a minute.'
 }
 
-const decidedLine = (a: Pick<Approval, 'id' | 'status'>): string =>
-  a.status === 'approved'
-    ? `✅ Draft #${a.id} approved. Your assistant sends it the next time it checks your drafts.`
-    : `❌ Draft #${a.id} rejected. It will not be sent.`
+const decidedLine = (a: Pick<Approval, 'id' | 'status'>, sent?: SendOutcome): string => {
+  if (a.status !== 'approved') return `❌ Draft #${a.id} rejected. It will not be sent.`
+  if (sent?.kind === 'sent') return `✅ Draft #${a.id} approved and sent to ${sent.to}.`
+  if (sent?.kind === 'not_sent') return `✅ Draft #${a.id} approved, but not sent: ${sent.reason}. It is still approved.`
+  if (sent?.kind === 'unknown') return `⚠️ Draft #${a.id} approved, but it may not have been sent: ${sent.reason}.`
+  return `✅ Draft #${a.id} approved. Your assistant sends it the next time it checks your drafts.`
+}
+
+// After a yes: aos sends an email draft itself when it can. Any failure here leaves the draft approved.
+const afterYes = async (d: BotDeps, chatId: string, a: Approval): Promise<SendOutcome | undefined> => {
+  if (a.status !== 'approved' || a.channel !== 'email') return undefined
+  return d.autoSend(chatId, a.id).catch((): SendOutcome => ({ kind: 'not_sent', reason: 'something went wrong. Try again in a minute' }))
+}
 
 const agendaText = (snap: Snapshot, now: Date): string => {
   const tz = snap.timezone && isValidTimeZone(snap.timezone) ? snap.timezone : DEFAULT_TZ
@@ -67,7 +79,8 @@ export const handleUpdate = async (u: Update, d: BotDeps): Promise<void> => {
     try {
       const a = await d.decide(chatId, pick.id, pick.decision)
       await d.answer(q.id, a.status === 'approved' ? 'Approved' : 'Rejected')
-      if (q.message) await d.edit(chatId, q.message.message_id, `${q.message.text ?? `Draft #${a.id}`}\n\n${decidedLine(a)}`)
+      const sent = await afterYes(d, chatId, a)
+      if (q.message) await d.edit(chatId, q.message.message_id, `${q.message.text ?? `Draft #${a.id}`}\n\n${decidedLine(a, sent)}`)
     } catch (e) {
       await d.answer(q.id, reason(e))
     }
@@ -125,7 +138,8 @@ export const handleUpdate = async (u: Update, d: BotDeps): Promise<void> => {
     }
     case 'decide':
       try {
-        await d.send(chatId, decidedLine(await d.decide(chatId, cmd.id, cmd.decision)))
+        const a = await d.decide(chatId, cmd.id, cmd.decision)
+        await d.send(chatId, decidedLine(a, await afterYes(d, chatId, a)))
       } catch (e) {
         await d.send(chatId, reason(e))
       }

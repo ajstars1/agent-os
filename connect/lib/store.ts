@@ -154,7 +154,7 @@ export const completeTask = async (
 
 export const requestApproval = async (
   sb: SupabaseClient,
-  input: { channel: string; draft: string; recipient?: string; task_id?: number; send_after?: string },
+  input: { channel: string; draft: string; recipient?: string; subject?: string; task_id?: number; send_after?: string },
 ): Promise<Approval> =>
   one<Approval>(
     await sb.rpc('request_approval', {
@@ -163,6 +163,7 @@ export const requestApproval = async (
       p_recipient: input.recipient ?? null,
       p_task_id: input.task_id ?? null,
       p_send_after: input.send_after ?? null,
+      p_subject: input.subject ?? null,
     }),
   )
 
@@ -279,6 +280,45 @@ export const createLinkCode = async (sb: SupabaseClient): Promise<string> => {
 export const unlinkPhone = async (sb: SupabaseClient): Promise<void> => {
   const { error } = await sb.from('channel_links').update({ deleted_at: new Date().toISOString() }).eq('channel', 'telegram').is('deleted_at', null)
   if (error) throw new Error(error.message)
+}
+
+// ---- connections (the vault) --------------------------------------------------------------------------------
+
+export interface MailConnection {
+  provider: string
+  username: string
+  from_name: string | null
+}
+
+// The person's own view, on the site. A connected app's token gets nothing from this table.
+export const mailConnection = async (sb: SupabaseClient): Promise<MailConnection | null> => {
+  const { data, error } = await sb.from('secrets').select('meta').eq('kind', 'smtp').is('deleted_at', null).maybeSingle()
+  if (error) throw new Error(error.message)
+  const meta = (data as { meta: Record<string, unknown> } | null)?.meta
+  if (!meta || typeof meta.provider !== 'string' || typeof meta.username !== 'string') return null
+  return { provider: meta.provider, username: meta.username, from_name: typeof meta.from_name === 'string' ? meta.from_name : null }
+}
+
+// sealed = the login already encrypted by the server (lib/vault.ts). The database refuses this for a connected app.
+export const saveMailConnection = async (sb: SupabaseClient, meta: MailConnection, sealed: string): Promise<void> => {
+  const { error } = await sb.rpc('put_secret', { p_kind: 'smtp', p_meta: meta, p_ciphertext: sealed })
+  if (error) throw new Error(error.message)
+}
+
+export const removeMailConnection = async (sb: SupabaseClient): Promise<void> => {
+  const { error } = await sb.rpc('remove_secret', { p_kind: 'smtp' })
+  if (error) throw new Error(error.message)
+}
+
+export interface ConnectionStatus {
+  email: { connected: boolean; address_hint?: string }
+}
+
+// What an assistant may know about the person's connections: that one exists, and a hint of the address.
+export const connectionStatus = async (sb: SupabaseClient): Promise<ConnectionStatus> => {
+  const { data, error } = await sb.rpc('connection_status', {})
+  if (error) throw new Error(error.message)
+  return data as ConnectionStatus
 }
 
 // ---- rate limit -------------------------------------------------------------------------------------------
