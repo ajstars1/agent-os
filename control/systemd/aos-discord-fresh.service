@@ -1,7 +1,0 @@
-[Unit]
-Description=aos phone agent: start a fresh conversation (daily)
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/touch /home/ubuntu/.cache/aos/discord-fresh
-ExecStart=/usr/bin/systemctl --user restart aos-discord

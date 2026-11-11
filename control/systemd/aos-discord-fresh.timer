@@ -1,9 +1,0 @@
-[Unit]
-Description=aos phone agent: fresh conversation every day at 04:00 IST
-
-[Timer]
-OnCalendar=*-*-* 04:00:00 Asia/Kolkata
-Persistent=false
-
-[Install]
-WantedBy=timers.target

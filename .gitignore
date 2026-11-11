@@ -46,3 +46,7 @@ Thumbs.db
 # Temp
 tmp/
 temp/
+
+# aos moved to its own repos (ajstars1/aos public, ajstars1/aos-control private); the folders stay here on disk
+connect/
+control/
