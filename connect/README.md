@@ -1,8 +1,31 @@
-# aos connect
+# aos
+
+[![CI](https://github.com/ajstars1/aos/actions/workflows/ci.yml/badge.svg)](https://github.com/ajstars1/aos/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A multi-user version of the aos core that anyone adds to the AI assistant they already use (Claude, ChatGPT, any MCP client) by pasting one link. Nothing to install, works on Mac, Windows, Linux and phones.
 
-It is a separate app from `control/` (Ayush's personal aos) with its **own database**. The two share no data and no code at runtime.
+It grew out of **aos control**, Ayush's personal setup on his own Linux PC (private, not in this repo). This is the version for everyone, with its **own database**; the two share no data and no code at runtime.
+
+## Start using it
+
+**Why it works on Mac, Windows, Linux and phones:** nothing runs on your computer. aos is a website plus a connector link. Your AI assistant (the Claude or ChatGPT app you already have, on any system) calls aos over the internet, so whatever runs your assistant runs aos.
+
+1. Open **https://aos-connect.vercel.app** and sign in with Google.
+2. On your page, copy the connector link: `https://aos-connect.vercel.app/api/mcp`
+3. Add it to your assistant:
+   - **Claude** (claude.ai, the desktop app on Mac or Windows, or Claude Code): Settings → Connectors → Add custom connector → paste the link → Connect, then press **Allow** on the aos page that opens. Connectors added on claude.ai also show up in the Claude phone app.
+   - **ChatGPT:** Settings → Connectors (or Apps) → add a custom connector with the same link. Custom connectors need a plan and settings that allow them.
+   - **Any other MCP client** that supports remote servers with OAuth: give it the same link.
+4. Ask your assistant: *"what's on my aos agenda today?"*
+5. Optional: on your aos page, connect Telegram so drafts reach your phone with Approve / Reject buttons, and connect your mailbox so approved emails send by themselves.
+
+| | Mac | Windows | Linux | Phone |
+|---|---|---|---|---|
+| **aos connect** (this folder): tasks, drafts you approve, goals, sealed email send, Telegram | ✅ | ✅ | ✅ | ✅ |
+| **aos control** (private, not in this repo): the agent that works on its own on a PC, desk control, power-on, Discord | ❌ | ❌ | ✅ (Ayush's setup: systemd, tmux, Hyprland) | via Discord |
+
+**Status (11 Nov 2026):** the app, the connector link and the OAuth flow up to the sign-in page are live and checked. A full run by a person (Google sign-in → add the connector in Claude → first tool call) has not been done yet; until it has, treat this as an early preview.
 
 ```
 person's assistant (Claude / ChatGPT)

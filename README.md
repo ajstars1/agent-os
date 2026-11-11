@@ -1,18 +1,18 @@
 # AgentOS
 
-[![npm version](https://img.shields.io/npm/v/agent-os-core?color=cb3837&logo=npm)](https://www.npmjs.com/package/agent-os-core)
-[![npm downloads](https://img.shields.io/npm/dm/agent-os-core?color=cb3837&logo=npm)](https://www.npmjs.com/package/agent-os-core)
+> **Looking for aos?** It moved to its own repo: **[ajstars1/aos](https://github.com/ajstars1/aos)**, the version
+> anyone can use on Mac, Windows, Linux or a phone (a link you add to Claude or ChatGPT, nothing to install).
+> Everything below is about the older terminal agent.
+
+> **Archived (2026-10-06).** This terminal agent is no longer maintained and was never published to npm
+> (`npm install -g agent-os-core` does not work). Its core idea, a short always-loaded index plus detail loaded on
+> demand, now ships natively in Claude Code's auto memory. The code stays here as a reference; build it from source
+> (below) to try it. Linux and macOS only.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord)](https://discord.gg/agent-os)
+[![Status: archived](https://img.shields.io/badge/status-archived-lightgrey.svg)](#)
 
 ### The AI agent that lives in your terminal — codes like Claude Code, remembers like a human, and gets smarter while you sleep.
-
-```bash
-npm install -g agent-os-core
-aos
-```
-
-That's it. One command. Your personal AI is alive.
 
 ---
 
@@ -103,7 +103,7 @@ Drop a `.json` file in `~/.agent-os/agents/` → start it with `aos --agent <nam
 Hot-reload. No restart. No config file gymnastics.
 
 ### 🔒 Permission system
-Every file write, every shell command requires explicit approval. **Allow once, Always allow, or Deny.** Session-cached. You stay in control.
+Every file write, every shell command requires explicit approval. **Allow once, Remember this exact request, Always allow the tool, or Deny.** Session-cached. You stay in control.
 
 ### 🪶 Runs on a $5 VPS
 SQLite + WAL mode. No Docker. No Postgres. No Redis. No vector database. No cloud bill.
@@ -133,26 +133,16 @@ Runs 10 simulated conversations and prints token usage side-by-side:
 
 ---
 
-## Install
+## Install (from source)
+
+There is no npm package. Build it from this repo (Node.js 22, Linux or macOS):
 
 ```bash
-npm install -g agent-os-core
+curl -fsSL https://raw.githubusercontent.com/ajstars1/agent-os/main/install.sh | bash
 aos
 ```
 
 On first run, `aos` walks you through entering your API key (Claude or Gemini — either one is enough) and saves it to `~/.agent-os/.env`.
-
-**Install from source instead:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ajstars1/agent-os/main/install.sh | bash
-```
-
-**Update at any time:**
-
-```bash
-aos update
-```
 
 ---
 
@@ -251,5 +241,5 @@ npm test
 
 <p align="center">
   <strong>Stop renting your memory from a chatbot. Run your own.</strong><br>
-  <a href="https://www.npmjs.com/package/agent-os-core">npm</a> · <a href="https://discord.gg/agent-os">Discord</a> · <a href="https://github.com/ajstars1/agent-os">GitHub</a>
+  <a href="https://github.com/ajstars1/agent-os">GitHub</a>
 </p>
